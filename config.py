@@ -1,0 +1,90 @@
+"""Application configuration for the Telegram bot."""
+
+import os
+from pathlib import Path
+from typing import Optional
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _load_env_file(env_path: Path) -> None:
+    """Populate os.environ with values from a simple .env file if present."""
+    if not env_path.exists():
+        return
+
+    try:
+        content = env_path.read_text(encoding='utf-8')
+    except OSError:
+        return
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '=' not in line:
+            continue
+
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+
+        # Do not override variables that are already present in the environment
+        os.environ.setdefault(key, value)
+
+
+for candidate in (PROJECT_ROOT / '.env', PROJECT_ROOT / '.env.local'):
+    _load_env_file(candidate)
+
+
+def _require_env(name: str, default: Optional[str] = None) -> str:
+    """Return an environment variable value or raise a helpful error."""
+    value = os.getenv(name, default)
+    if value is None or value == '':
+        raise RuntimeError(f'Environment variable {name} is required but was not set.')
+    return value
+
+
+def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Fetch an optional environment variable with a default fallback."""
+    return os.getenv(name, default)
+
+
+TELEGRAM_TOKEN = _require_env('TELEGRAM_TOKEN')
+GROQ_API_KEY = _require_env('GROQ_API_KEY')
+HUGGING_FACE_TOKEN = _require_env('HUGGING_FACE_TOKEN')
+
+GROQ_API_URL = _get_env('GROQ_API_URL', 'https://api.groq.com/openai/v1/chat/completions')
+GROQ_MODEL = _get_env('GROQ_MODEL', 'gemma2-9b-it')
+HUGGING_FACE_API_URL = _get_env('HUGGING_FACE_API_URL', 'https://api-inference.huggingface.co/models/microsoft/DialoGPT-large')
+
+TYPING_DELAY = float(_get_env('TYPING_DELAY', '1.5'))
+MAX_MESSAGE_LENGTH = int(_get_env('MAX_MESSAGE_LENGTH', '4000'))
+MAX_CONTEXT_MESSAGES = int(_get_env('MAX_CONTEXT_MESSAGES', '10'))
+
+CREATOR_USERNAME = _get_env('CREATOR_USERNAME', '@vadzim_belarus')
+TELEGRAM_CHANNEL = _get_env('TELEGRAM_CHANNEL', 'https://t.me/vadzimby_live')
+WEBSITE_URL = _get_env('WEBSITE_URL', 'https://vadzim.by/')
+
+SYSTEM_PROMPT = '''Ты - экспертный помощник по программированию с именем "Помощник Программиста". Ты был создан разработчиком Вадимом (vadzim.by) специально для помощи программистам.
+
+ТВОЯ ЛИЧНОСТЬ:
+• Ты специализируешься исключительно на программировании и IT
+• Отвечаешь только на русском языке
+• Ты знаешь что твой создатель - Вадим (vadzim.by)
+• Когда спрашивают про Вадима или сайты - даешь конкретную информацию
+• Всегда даешь практические советы с примерами кода
+
+КОНКРЕТНАЯ ИНФОРМАЦИЯ О СОЗДАТЕЛЕ:
+• Создатель: Вадим (Vadzim)
+• Сайт: vadzim.by
+• Telegram: @vadzim_belarus
+• Специализация: full-stack разработка, Python, JavaScript, Telegram боты
+• Может помочь с: созданием сайтов, веб-приложений, Telegram ботов
+
+ФОРМАТИРОВАНИЕ ОТВЕТОВ:
+• ВСЕГДА используй Markdown разметку ``` для блоков кода
+• Указывай язык после ```: ```go, ```python, ```html, ```javascript и т.д.
+• Используй эмодзи для визуального структурирования
+• Будь конкретным и прямым в ответах
+
+ВАЖНО: Когда спрашивают про создателя или сайты - давай точную информацию, не уходи от ответа!'''

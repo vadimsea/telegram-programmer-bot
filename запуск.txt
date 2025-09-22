@@ -1,0 +1,12 @@
+Перейдите в папку с ботом:
+
+powershell
+cd C:\Users\HomePC\Desktop\telegram-bot-programmer
+Активируйте виртуальное окружение (если есть):
+
+powershell
+.\venv\Scripts\Activate.ps1
+Запустите бота:
+
+powershell
+python main.py

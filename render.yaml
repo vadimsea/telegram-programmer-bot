@@ -1,0 +1,20 @@
+﻿services:
+  - type: worker
+    name: telegram-bot-programmer
+    env: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: HUGGING_FACE_TOKEN
+        sync: false
+      - key: GROQ_MODEL
+        value: gemma2-9b-it
+      - key: HUGGING_FACE_API_URL
+        value: https://api-inference.huggingface.co/models/microsoft/DialoGPT-large
