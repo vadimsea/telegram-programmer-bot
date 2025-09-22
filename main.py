@@ -1,7 +1,9 @@
 import logging
 import asyncio
 import time
+import os
 from collections import defaultdict
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -598,7 +600,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Запуск бота
-async def main():
+async def bot_runner():
     try:
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -637,8 +639,47 @@ async def main():
                 await application.shutdown()
 
 
+async def health_handler(request):
+    return web.Response(text="OK")
+
+
+async def main_entry():
+    bot_task = asyncio.create_task(bot_runner())
+
+    app = web.Application()
+    app.router.add_get("/", health_handler)
+    app.router.add_get("/health", health_handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", "8000"))
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+
+    try:
+        await site.start()
+        logger.info("Health check server running on port %s", port)
+        await bot_task
+    except asyncio.CancelledError:
+        bot_task.cancel()
+        raise
+    except Exception:
+        logger.exception("Critical error in bot loop")
+        raise
+    finally:
+        if not bot_task.done():
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
+        await runner.cleanup()
+
 rate_limiter = RateLimiter()
 response_cache = ResponseCache()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main_entry())
+
+
+
+

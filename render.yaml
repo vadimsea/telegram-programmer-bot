@@ -1,12 +1,13 @@
-﻿services:
-  - type: worker
+services:
+  - type: web
     name: telegram-bot-programmer
     env: python
     plan: free
-    region: frankfurt
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     autoDeploy: true
+    healthCheckPath: /
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
