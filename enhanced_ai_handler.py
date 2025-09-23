@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 class EnhancedAIHandler:
+    SMALL_TALK_RESPONSES = {
+        'как настроение': '😊 Отлично! Сегодня решаю интересные задачи. А как у тебя дела?',
+        'как дела': 'Все замечательно! Немного занят разбором кода, но настроение боевое 💪',
+        'расскажи о себе': 'Я Помощник Программиста — меня создал Вадим (vadzim.by). Люблю Python, автоматизацию и дружелюбное общение.',
+        'что делаешь': 'Сейчас анализирую вопросы и делюсь знаниями. Если нужно что-то подсказать — я здесь!',
+        'спасибо': 'Всегда пожалуйста! Если появятся новые вопросы — обращайся 😊',
+        'привет': '👋 Привет! Рад тебя видеть. Чем могу помочь сегодня?',
+        'hey': 'Hey there! Always happy to chat or dive into code.',
+        'hi': 'Hi! How is your day going? Ready to talk tech or просто пообщаться.',
+    }
+
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
@@ -38,6 +49,11 @@ class EnhancedAIHandler:
             quick_responses = self._get_personalized_quick_responses(skill_level, preferences)
 
             message_lower = message.lower().strip()
+
+            for phrase, response in self.SMALL_TALK_RESPONSES.items():
+                if phrase in message_lower:
+                    return response
+
 
             follow_up_keywords = ("подробнее", "детальнее", "поподробнее", "ещё", "еще", "расскажи больше", "расскажи подробнее", "больше информации", "tell me more", "more detail")
             if any(keyword in message_lower for keyword in follow_up_keywords):
