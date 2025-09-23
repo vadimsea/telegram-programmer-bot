@@ -25,6 +25,7 @@ class EnhancedAIHandler:
 
     async def get_specialized_response(self, message: str, mode: str = "general", user_context=None,
                                        skill_level: str = "beginner", preferences: dict = None) -> str:
+        follow_up = False
         """Ответ от ИИ с правильным форматированием кода для Telegram"""
         try:
             if preferences is None:
@@ -36,6 +37,19 @@ class EnhancedAIHandler:
             quick_responses = self._get_personalized_quick_responses(skill_level, preferences)
 
             message_lower = message.lower().strip()
+
+            follow_up_keywords = ("подробнее", "детальнее", "поподробнее", "ещё", "еще", "расскажи больше", "расскажи подробнее", "больше информации", "tell me more", "more detail")
+            if any(keyword in message_lower for keyword in follow_up_keywords):
+                follow_up = True
+            elif user_context and hasattr(user_context, 'history') and user_context.history:
+                recent_user_messages = [entry['content'].lower().strip() for entry in reversed(user_context.history) if entry['role'] == 'user']
+                if recent_user_messages:
+                    last_question = recent_user_messages[0]
+                    if last_question == message_lower or (len(message_lower) > 12 and message_lower in last_question):
+                        follow_up = True
+
+            if follow_up and skill_level != 'advanced':
+                skill_level = 'intermediate' if skill_level == 'beginner' else 'advanced'
             if message_lower in quick_responses and len(message_lower.split()) <= 3:
                 return quick_responses[message_lower]
 
@@ -68,7 +82,7 @@ class EnhancedAIHandler:
             # === Обращение к Groq API ===
             if self.groq_client:
                 try:
-                    prompt = self._build_personalized_prompt(message, mode, skill_level, preferences)
+                    prompt = self._build_personalized_prompt(message, mode, skill_level, preferences, follow_up=follow_up)
                     logger.info(f"🔄 Отправка запроса к Groq (mode={mode}, level={skill_level}): {message[:50]}...")
 
                     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -377,7 +391,7 @@ class EnhancedAIHandler:
 
         return base_responses
 
-    def _build_personalized_prompt(self, message: str, mode: str, skill_level: str, preferences: dict) -> str:
+    def _build_personalized_prompt(self, message: str, mode: str, skill_level: str, preferences: dict, follow_up: bool = False) -> str:
         """Создает персонализированный промпт на основе уровня навыков и предпочтений"""
 
         # Базовые описания режимов
@@ -428,15 +442,18 @@ class EnhancedAIHandler:
             task += f". Если возможно, используй примеры на {preferred_language}"
 
         # Добавляем стиль объяснения
+        if follow_up:
+            task += ". User already received a basic answer, so add new depth: advanced examples, best practices, common mistakes, and references for self-study"
+
         explanation_style = preferences.get('explanation_style', '')
         if explanation_style == 'detailed':
             task += ". Дай максимально подробное объяснение"
         elif explanation_style == 'concise':
             task += ". Будь кратким и по делу"
 
-        task += ". Весь код оформляй в ОДИН блок с \`\`\`язык"
-
+        task += ". Provide actionable next steps, add links to docs, format code in ```language``` and do not repeat previous explanations word for word"
         return f"{task}:\n\n{message}"
+
 
 
 # Синглтон
