@@ -5,6 +5,7 @@ Enhanced AI Handler - с правильным форматированием к�
 import asyncio
 import logging
 import re
+from typing import List, Optional
 from groq import AsyncGroq
 from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
 
@@ -42,7 +43,7 @@ class EnhancedAIHandler:
             if any(keyword in message_lower for keyword in follow_up_keywords):
                 follow_up = True
             elif user_context and hasattr(user_context, 'history') and user_context.history:
-                recent_user_messages = [entry['content'].lower().strip() for entry in reversed(user_context.history) if entry['role'] == 'user']
+                recent_user_messages = [entry['content'].lower().strip() for entry in reversed(user_context.history) if entry.get('role') == 'user']
                 if recent_user_messages:
                     last_question = recent_user_messages[0]
                     if last_question == message_lower or (len(message_lower) > 12 and message_lower in last_question):
@@ -50,6 +51,32 @@ class EnhancedAIHandler:
 
             if follow_up and skill_level != 'advanced':
                 skill_level = 'intermediate' if skill_level == 'beginner' else 'advanced'
+
+            base_question = None
+            previous_answer = None
+            if user_context and hasattr(user_context, 'history') and user_context.history:
+                for entry in reversed(user_context.history):
+                    if entry.get('role') == 'assistant':
+                        previous_answer = entry.get('content', '')
+                        if previous_answer:
+                            previous_answer = previous_answer.strip()
+                        break
+                for entry in reversed(user_context.history):
+                    if entry.get('role') != 'user':
+                        continue
+                    prior_text = entry.get('content', '')
+                    if not prior_text:
+                        continue
+                    normalized = prior_text.lower().strip()
+                    if normalized == message_lower:
+                        continue
+                    if any(keyword in normalized for keyword in follow_up_keywords):
+                        continue
+                    if len(normalized.split()) <= 3:
+                        continue
+                    base_question = prior_text.strip()
+                    break
+
             if message_lower in quick_responses and len(message_lower.split()) <= 3:
                 return quick_responses[message_lower]
 
@@ -82,7 +109,15 @@ class EnhancedAIHandler:
             # === Обращение к Groq API ===
             if self.groq_client:
                 try:
-                    prompt = self._build_personalized_prompt(message, mode, skill_level, preferences, follow_up=follow_up)
+                    prompt = self._build_personalized_prompt(
+                        message,
+                        mode,
+                        skill_level,
+                        preferences,
+                        follow_up=follow_up,
+                        base_question=base_question,
+                        previous_answer=previous_answer,
+                    )
                     logger.info(f"🔄 Отправка запроса к Groq (mode={mode}, level={skill_level}): {message[:50]}...")
 
                     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -391,7 +426,16 @@ class EnhancedAIHandler:
 
         return base_responses
 
-    def _build_personalized_prompt(self, message: str, mode: str, skill_level: str, preferences: dict, follow_up: bool = False) -> str:
+    def _build_personalized_prompt(
+        self,
+        message: str,
+        mode: str,
+        skill_level: str,
+        preferences: dict,
+        follow_up: bool = False,
+        base_question: Optional[str] = None,
+        previous_answer: Optional[str] = None,
+    ) -> str:
         """Создает персонализированный промпт на основе уровня навыков и предпочтений"""
 
         # Базовые описания режимов
@@ -452,8 +496,21 @@ class EnhancedAIHandler:
             task += ". Будь кратким и по делу"
 
         task += ". Provide actionable next steps, add links to docs, format code in ```language``` and do not repeat previous explanations word for word"
-        return f"{task}:\n\n{message}"
 
+        context_sections: List[str] = []
+        if follow_up:
+            context_sections.append("The user already received a basic answer earlier. Provide a deeper continuation: add advanced examples, highlight best practices, warn about common pitfalls, and suggest resources to study next.")
+        if base_question:
+            context_sections.append(f"Original question from the user: {base_question}")
+        if previous_answer:
+            trimmed_answer = previous_answer.strip()
+            if len(trimmed_answer) > 800:
+                trimmed_answer = trimmed_answer[:800] + '…'
+            context_sections.append(f"Previous assistant answer (reference only, do not repeat): {trimmed_answer}")
+
+        context_sections.append(f"Current user message: {message}")
+
+        return f"{task}:\n\n" + "\n\n".join(context_sections) + "\n\nПредложи новые идеи, чтобы пользователь продвинулся дальше."
 
 
 # Синглтон
