@@ -100,6 +100,13 @@ class ResponseCache:
         self.cache[question_hash] = response
 
 
+
+def _is_legacy_fallback_response(text: str) -> bool:
+    if not text:
+        return False
+    markers = ("Hello, world", "Вопрос по программированию", "Быстрый ответ из кэша")
+    text_lower = text.lower()
+    return any(marker.lower() in text_lower for marker in markers)
 # Контекст пользователя
 class UserContext:
     def __init__(self):
@@ -344,6 +351,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         question_hash = hashlib.md5(text.encode()).hexdigest()
         cached_response = response_cache.get(question_hash)
 
+        if cached_response and _is_legacy_fallback_response(cached_response):
+            logger.info("Removing legacy fallback from cache")
+            response_cache.cache.pop(question_hash, None)
+            cached_response = None
+
         if cached_response:
             logger.info(f"📦 Используем кэшированный ответ для {user_id}")
             await update.message.reply_text(
@@ -375,8 +387,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Логируем входящее сообщение
         logger.info(f"📨 Получено сообщение от {user_id}: {text[:100]}...")
 
+        is_fallback = False
         try:
-            response = await asyncio.wait_for(
+            response, is_fallback = await asyncio.wait_for(
                 enhanced_ai_handler.get_specialized_response(
                     text,
                     "general",
@@ -408,7 +421,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        response_cache.set(question_hash, response)
+        if not is_fallback:
+            response_cache.set(question_hash, response)
+        else:
+            logger.info("Skipping cache for fallback response")
 
         user_context.add_message("assistant", response)
 

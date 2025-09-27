@@ -5,7 +5,7 @@ Enhanced AI Handler - с правильным форматированием к�
 import asyncio
 import logging
 import re
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from groq import AsyncGroq
 from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
 
@@ -29,16 +29,25 @@ class EnhancedAIHandler:
         'привет': '👋 Привет! Рад тебя видеть. Чем могу помочь сегодня?',
         'hey': 'Hey there! Always happy to chat or dive into code.',
         'hi': 'Hi! How is your day going? Ready to talk tech or просто пообщаться.',
+        'видел статью': 'Да, видел обновление на vadzim.by — если есть вопросы по статье, давай обсудим.',
+        'читаешь статьи': 'Я могу обсудить любую статью с vadzim.by — просто уточни, что интересно.',
+        'ты тут': 'Да, я здесь и готов отвечать. Чем помочь?',
     }
 
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
 
-    async def get_specialized_response(self, message: str, mode: str = "general", user_context=None,
-                                       skill_level: str = "beginner", preferences: dict = None) -> str:
+    async def get_specialized_response(
+        self,
+        message: str,
+        mode: str = "general",
+        user_context=None,
+        skill_level: str = "beginner",
+        preferences: dict = None,
+    ) -> Tuple[str, bool]:
+        """Generate a reply for Telegram and flag whether it is a fallback."""
         follow_up = False
-        """Ответ от ИИ с правильным форматированием кода для Telegram"""
         try:
             if preferences is None:
                 preferences = {}
@@ -94,14 +103,39 @@ class EnhancedAIHandler:
                     break
 
             if message_lower in quick_responses and len(message_lower.split()) <= 3:
-                return quick_responses[message_lower]
+                return quick_responses[message_lower], False
+
+            if "калькулятор" in message_lower:
+                calc_example = ("Вот простой консольный калькулятор на Python:\n\n"
+                                "```python\n"
+                                "def calculator():\n"
+                                "    operations = {\n"
+                                "        '+': lambda a, b: a + b,\n"
+                                "        '-': lambda a, b: a - b,\n"
+                                "        '*': lambda a, b: a * b,\n"
+                                "        '/': lambda a, b: a / b if b != 0 else 'Ошибка: деление на ноль'\n"
+                                "    }\n\n"
+                                "    op = input('Операция (+, -, *, /): ').strip()\n"
+                                "    a = float(input('Первое число: '))\n"
+                                "    b = float(input('Второе число: '))\n\n"
+                                "    if op not in operations:\n"
+                                "        return 'Неизвестная операция'\n\n"
+                                "    result = operations[op](a, b)\n"
+                                "    return f'Результат: {result}'\n\n"
+                                "if __name__ == '__main__':\n"
+                                "    print(calculator())\n"
+                                "```\n\n"
+                                "Хочешь расширенную версию с меню, обработкой ошибок или GUI — скажи, подскажу.")
+                return calc_example, False
 
             if "найди ошибку" in message_lower or "find error" in message_lower:
-                return await self._analyze_code_for_errors(message)
+                analysis = await self._analyze_code_for_errors(message)
+                return analysis, False
 
             if any(phrase in message_lower for phrase in
                    ["с чего начать", "как начать", "начать учить", "начать изучать"]):
-                return await self._get_learning_advice(message)
+                advice = await self._get_learning_advice(message)
+                return advice, False
 
             if "оптимизируй" in message_lower or "optimize" in message_lower:
                 mode = "optimize_code"
@@ -117,10 +151,12 @@ class EnhancedAIHandler:
                 mode = "general"
 
             if "объясни этот код" in message_lower or "что делает этот код" in message_lower:
-                return await self.explain_code(message)
+                explanation = await self.explain_code(message)
+                return explanation, False
 
             if "проанализируй этот код" in message_lower or "analyze this code" in message_lower:
-                return await self.explain_code(message)
+                explanation = await self.explain_code(message)
+                return explanation, False
 
             # === Обращение к Groq API ===
             if self.groq_client:
@@ -161,31 +197,31 @@ class EnhancedAIHandler:
 
                     if not response or not hasattr(response, "choices") or not response.choices:
                         logger.warning("⚠️ Пустой ответ от Groq. Используем fallback.")
-                        return self._get_fallback_response(message, mode)
+                        return self._get_fallback_response(message, mode), True
 
                     choice = response.choices[0]
                     content = getattr(choice.message, "content", None) if hasattr(choice, "message") else None
 
                     if not content:
                         logger.warning("⚠️ Пустое содержимое ответа. Используем fallback.")
-                        return self._get_fallback_response(message, mode)
+                        return self._get_fallback_response(message, mode), True
 
                     ai_response = content.strip()
                     logger.info("✅ Успешный ответ от Groq")
-                    return self._format_for_telegram(ai_response)
+                    return self._format_for_telegram(ai_response), False
 
                 except asyncio.TimeoutError:
                     logger.warning("⏰ Таймаут запроса к Groq")
-                    return "⏰ ИИ долго думает... Попробуйте задать вопрос короче."
+                    return "⏰ ИИ долго думает... Попробуйте задать вопрос короче.", True
                 except Exception as e:
                     logger.error(f"❌ Ошибка Groq: {e}")
-                    return self._get_fallback_response(message, mode)
+                    return self._get_fallback_response(message, mode), True
 
-            return self._get_fallback_response(message, mode)
+            return self._get_fallback_response(message, mode), True
 
         except Exception as e:
             logger.error(f"🔥 Критическая ошибка: {e}")
-            return self._get_fallback_response(message, mode)
+            return self._get_fallback_response(message, mode), True
 
     async def _analyze_code_for_errors(self, message: str) -> str:
         """Анализ кода на ошибки"""
@@ -382,12 +418,12 @@ class EnhancedAIHandler:
 
     def _get_fallback_response(self, message: str, mode: str) -> str:
         fallbacks = {
-            "analyze_code": "🔍 Анализ кода\n\n\`\`\`python\n# Используйте линтеры и тесты\n\`\`\`",
-            "debug_code": "🐛 Отладка\n\n\`\`\`python\nprint('Значение:', var)\nimport pdb; pdb.set_trace()\n\`\`\`",
-            "explain_concept": f"📚 Объяснение концепции\n\n'{message[:50]}...'\n\n\`\`\`python\nclass Example:\n    pass\n\`\`\`",
-            "optimize_code": "⚡ Оптимизация кода\n\n\`\`\`python\nnumbers = [i for i in range(1000)]\n\`\`\`",
-            "architecture_advice": "🏗️ Архитектурные советы\n\n\`\`\`python\n# MVC, Clean Architecture\n\`\`\`",
-            "general": f"🤖 Вопрос по программированию\n\n'{message[:50]}...'\n\n\`\`\`python\nprint('Hello, world!')\n\`\`\`"
+            "analyze_code": "Не удалось быстро разобрать код. Отправь его ещё раз и уточни, что именно смущает.",
+            "debug_code": "Не получилось воспроизвести проблему. Проверь, хватает ли контекста, и пришли пример повторно.",
+            "explain_concept": "Пока не удалось подобрать объяснение. Сформулируй вопрос иначе или добавь деталей.",
+            "optimize_code": "Сейчас не получилось предложить оптимизацию. Попробуй описать цель подробнее и повтори запрос.",
+            "architecture_advice": "Не успел сформировать архитектурный совет. Дай больше информации о проекте и спроси ещё раз.",
+            "general": "Не удалось получить ответ от модели. Повтори вопрос через несколько секунд — я уже готов снова помочь."
         }
         return fallbacks.get(mode, fallbacks["general"])
 
