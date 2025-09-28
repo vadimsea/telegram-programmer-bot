@@ -80,7 +80,7 @@ def format_code_response(response: str) -> str:
 
     # Улучшаем форматирование списков
     response = re.sub(r'\n(\d+)\. ', r'\n\1\. ', response)
-    response = re.sub(r'\n- ', r'\n• ', response)
+    response = re.sub(r'\n- ', r'\n&#8226; ', response)
 
     return response
 

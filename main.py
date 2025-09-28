@@ -88,8 +88,8 @@ def convert_markdown_to_html(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     # Italic (*text*)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
-    # Bullet points starting with '-', '*', or '?'
-    text = re.sub(r'(^|\n)[\-*?]\s+', r'\1? ', text)
+    # Bullet points starting with '-', '*', or '•' (bullet)
+    text = re.sub(r'(^|\n)[\-*\u2022]\s+', r'\1&#8226; ', text)
     return text
 
 
