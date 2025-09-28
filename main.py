@@ -2,9 +2,12 @@ import logging
 import asyncio
 import time
 import os
+import csv
 from collections import defaultdict
 from aiohttp import web
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from io import StringIO, BytesIO
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -198,12 +201,23 @@ def get_main_keyboard():
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data
+
+    if data == "admin_export_csv":
+        username = query.from_user.username
+        if username != CREATOR_USERNAME[1:]:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        await query.answer()
+        await _send_admin_export_csv(query)
+        return
+
     await query.answer()
 
     user_id = query.from_user.id
     user_context = get_user_context(user_id)
 
-    if query.data == "feedback_good":
+    if data == "feedback_good":
         user_context.update_skill_level(5)
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
@@ -633,9 +647,58 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📈 Статистика обновляется в реальном времени"
     )
 
-    await update.message.reply_text(admin_text)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📄 Экспорт CSV", callback_data="admin_export_csv")]
+    ])
+
+    await update.message.reply_text(admin_text, reply_markup=keyboard)
 
 
+async def _send_admin_export_csv(query):
+    if not user_db.users_data:
+        await query.message.reply_text("Пока нет данных для экспорта.")
+        return
+
+
+    fieldnames = [
+        "user_id",
+        "username",
+        "first_name",
+        "preferred_language",
+        "skill_level",
+        "total_questions",
+        "favorite_topics",
+        "learning_goals",
+        "created_at",
+        "last_active",
+    ]
+
+    stream = StringIO()
+    writer = csv.DictWriter(stream, fieldnames=fieldnames)
+    writer.writeheader()
+
+    for record in user_db.users_data.values():
+        writer.writerow({
+            "user_id": record.get("user_id"),
+            "username": record.get("username") or "",
+            "first_name": record.get("first_name") or "",
+            "preferred_language": record.get("preferred_language") or "",
+            "skill_level": record.get("skill_level") or "",
+            "total_questions": record.get("total_questions", 0),
+            "favorite_topics": "; ".join(record.get("favorite_topics", [])),
+            "learning_goals": "; ".join(record.get("learning_goals", [])),
+            "created_at": record.get("created_at") or "",
+            "last_active": record.get("last_active") or "",
+        })
+
+    buffer = BytesIO(stream.getvalue().encode("utf-8"))
+    buffer.seek(0)
+    filename = f"users_export_{datetime.utcnow():%Y%m%d_%H%M%S}.csv"
+
+    await query.message.reply_document(
+        document=InputFile(buffer, filename=filename),
+        caption="Экспорт пользователей (UTF-8)"
+    )
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
