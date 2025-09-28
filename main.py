@@ -119,6 +119,9 @@ class UserContext:
             'favorite_languages': [],
             'learning_goals': []
         }
+        self.last_tip_topic = None
+        self.last_tip_text = None
+        self.user_id = None
         self.feedback_scores = []
 
     def add_message(self, role: str, content: str):
@@ -150,7 +153,9 @@ user_contexts = {}
 def get_user_context(user_id: int) -> UserContext:
     if user_id not in user_contexts:
         user_contexts[user_id] = UserContext()
-    return user_contexts[user_id]
+    context = user_contexts[user_id]
+    context.user_id = user_id
+    return context
 
 
 def get_main_keyboard():
