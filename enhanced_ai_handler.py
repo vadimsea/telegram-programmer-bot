@@ -593,12 +593,8 @@ class EnhancedAIHandler:
 
                     ai_response = content.strip()
                     ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
-                    if len(ai_response) > 2200:
-                        ai_response = ai_response[:2200] + "…"
                     logger.info("✅ Успешный ответ от Groq")
                     formatted = self._format_for_telegram(ai_response)
-                    if len(formatted) > 3500:
-                        formatted = formatted[:3500] + "…"
                     return formatted, False
 
                 except asyncio.TimeoutError:
