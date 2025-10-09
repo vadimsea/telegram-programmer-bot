@@ -390,6 +390,13 @@ class EnhancedAIHandler:
                 logger.info(f"🔄 Обработка запроса от пользователя {user_context.user_id} (уровень: {skill_level})")
 
             message_lower = message.lower().strip()
+            
+            # Early truncation to keep answers compact
+            max_rows = 10
+            lines = message.splitlines()
+            if len(lines) > max_rows:
+                message = "\n".join(lines[:max_rows]) + "\n…"
+                message_lower = message.lower().strip()
 
             small_talk_reply = self._match_small_talk(message_lower)
             if small_talk_reply:
