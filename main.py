@@ -87,12 +87,62 @@ def escape_html_chars(text):
 def convert_markdown_to_html(text: str) -> str:
     import re
 
+    # Headings -> bold paragraphs
+    text = re.sub(r'^\s*#{3}\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*#{2}\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*#\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+
+    # Replace horizontal rules with blank lines
+    text = re.sub(r'^\s*([-*_]){3,}\s*$', '', text, flags=re.MULTILINE)
+
+    # Convert simple markdown tables to bullet lists
+    lines = text.split('\n')
+    processed_lines = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith('|') and stripped.endswith('|'):
+            if i + 1 < len(lines):
+                separator = lines[i + 1].strip()
+                if re.match(r'^\|\s*[-:]+\s*(\|\s*[-:]+\s*)+\|?$', separator):
+                    headers = [c.strip() for c in stripped.strip('|').split('|')]
+                    headers = [h for h in headers if h]
+                    i += 2
+                    while i < len(lines):
+                        row = lines[i].strip()
+                        if not (row.startswith('|') and row.endswith('|')):
+                            break
+                        cells = [c.strip() for c in row.strip('|').split('|')]
+                        pairs = []
+                        for idx, cell in enumerate(cells):
+                            if idx < len(headers) and headers[idx]:
+                                content = cell or '—'
+                                content = content or '—'
+                                # wrap in code if looks like tag or contains <>
+                                if '<' in content or '&lt;' in content:
+                                    content = f"<code>{content}</code>"
+                                pairs.append(f"<b>{headers[idx]}:</b> {content}")
+                            elif cell:
+                                content = cell
+                                if '<' in content or '&lt;' in content:
+                                    content = f"<code>{content}</code>"
+                                pairs.append(content)
+                        if pairs:
+                            processed_lines.append('&#8226; ' + '<br>'.join(pairs))
+                        i += 1
+                    continue
+        processed_lines.append(lines[i])
+        i += 1
+    text = '\n'.join(processed_lines)
+
     # Bold (**text**)
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
     # Italic (*text*)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text)
     # Bullet points starting with '-', '*', or '•' (bullet)
     text = re.sub(r'(^|\n)[\-*\u2022]\s+', r'\1&#8226; ', text)
+    # Numbered lists keep numbers but ensure spacing
+    text = re.sub(r'\n(\d+)\.\s+', r'\n\1. ', text)
     return text
 
 
