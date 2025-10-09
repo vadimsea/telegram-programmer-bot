@@ -387,7 +387,7 @@ class EnhancedAIHandler:
                 preferences = {}
 
             if user_context and hasattr(user_context, 'user_id'):
-                logger.info(f"🔄 Обработка запроса от пользователя {user_context.user_id} (уровень: {skill_level})")
+                    logger.info(f"🔄 Обработка запроса от пользователя {user_context.user_id} (уровень: {skill_level})")
 
             message_lower = message.lower().strip()
             
@@ -592,16 +592,13 @@ class EnhancedAIHandler:
                         return self._get_fallback_response(message, mode), True
 
                     ai_response = content.strip()
-                    tone = self._detect_message_tone(message_lower)
-                    if tone:
-                        ai_response = self._augment_with_tone(ai_response, tone)
                     ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
-                    if len(ai_response) > 1500:
-                        ai_response = ai_response[:1500] + "…"
+                    if len(ai_response) > 2200:
+                        ai_response = ai_response[:2200] + "…"
                     logger.info("✅ Успешный ответ от Groq")
                     formatted = self._format_for_telegram(ai_response)
-                    if len(formatted) > 2000:
-                        formatted = formatted[:2000] + "…"
+                    if len(formatted) > 3500:
+                        formatted = formatted[:3500] + "…"
                     return formatted, False
 
                 except asyncio.TimeoutError:
