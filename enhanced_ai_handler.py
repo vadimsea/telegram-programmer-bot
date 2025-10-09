@@ -596,8 +596,13 @@ class EnhancedAIHandler:
                     if tone:
                         ai_response = self._augment_with_tone(ai_response, tone)
                     ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
+                    if len(ai_response) > 1500:
+                        ai_response = ai_response[:1500] + "…"
                     logger.info("✅ Успешный ответ от Groq")
-                    return self._format_for_telegram(ai_response), False
+                    formatted = self._format_for_telegram(ai_response)
+                    if len(formatted) > 2000:
+                        formatted = formatted[:2000] + "…"
+                    return formatted, False
 
                 except asyncio.TimeoutError:
                     logger.warning("⏰ Таймаут запроса к Groq")
@@ -937,6 +942,7 @@ class EnhancedAIHandler:
             task += ". Будь кратким и по делу"
 
         task += ". Provide actionable next steps, add links to docs, format code in ```language``` and do not repeat previous explanations word for word"
+        task += ". Avoid markdown tables, favor short paragraphs or bullet lists, keep the answer within 1200 characters unless code requires more space"
 
         context_sections: List[str] = []
         if follow_up:
