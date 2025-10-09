@@ -42,7 +42,7 @@ def format_code_for_telegram(text):
         code_content = match.group(2).rstrip()
         escaped_code = escape_code_content(code_content)
         placeholder = f'__CODE_BLOCK_{len(block_placeholders)}__'
-        block_placeholders[placeholder] = f'<pre>{escaped_code}</pre>'
+        block_placeholders[placeholder] = f'<pre><code>{escaped_code}</code></pre>'
         return placeholder
 
     text = re.sub(r'```(\w+)?\n?(.*?)\n?```', replace_code_block, text, flags=re.DOTALL)
