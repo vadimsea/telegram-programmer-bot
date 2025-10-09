@@ -54,7 +54,7 @@ GROQ_API_KEY = _require_env('GROQ_API_KEY')
 HUGGING_FACE_TOKEN = _require_env('HUGGING_FACE_TOKEN')
 
 GROQ_API_URL = _get_env('GROQ_API_URL', 'https://api.groq.com/openai/v1/chat/completions')
-GROQ_MODEL = _get_env('GROQ_MODEL', 'gemma2-9b-it')
+GROQ_MODEL = _get_env('GROQ_MODEL', 'openai/gpt-oss-20b')
 HUGGING_FACE_API_URL = _get_env('HUGGING_FACE_API_URL', 'https://api-inference.huggingface.co/models/microsoft/DialoGPT-large')
 
 TYPING_DELAY = float(_get_env('TYPING_DELAY', '1.5'))

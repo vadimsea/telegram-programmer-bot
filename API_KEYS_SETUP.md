@@ -11,7 +11,7 @@
 1. Зарегистрируйтесь на [console.groq.com](https://console.groq.com).
 2. Создайте API key на вкладке *API Keys*.
 3. Запишите значение в `GROQ_API_KEY` внутри `.env`.
-4. При необходимости укажите модель (по умолчанию `gemma2-9b-it`) через переменную `GROQ_MODEL`.
+4. При необходимости укажите модель (по умолчанию `openai/gpt-oss-20b`) через переменную `GROQ_MODEL`.
 
 ## 3. HuggingFace API
 1. Войдите на [huggingface.co](https://huggingface.co) и откройте *Settings → Access Tokens*.

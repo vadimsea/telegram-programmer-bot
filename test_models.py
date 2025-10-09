@@ -17,7 +17,7 @@ from config import (
 GROQ_MODELS = [
     "llama3.1-8b-8192",
     "llama3.1-70b-8192", 
-    "gemma2-9b-it",
+    "openai/gpt-oss-20b",
     "mixtral-8x7b-32768",
     "llama3.1-8b-8192"
 ]

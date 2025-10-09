@@ -16,6 +16,6 @@ services:
       - key: HUGGING_FACE_TOKEN
         sync: false
       - key: GROQ_MODEL
-        value: gemma2-9b-it
+        value: openai/gpt-oss-20b
       - key: HUGGING_FACE_API_URL
         value: https://api-inference.huggingface.co/models/microsoft/DialoGPT-large

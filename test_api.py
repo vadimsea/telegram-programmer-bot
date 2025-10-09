@@ -25,7 +25,7 @@ async def test_groq_api():
             }
             
             payload = {
-                "model": "gemma2-9b-it",
+                "model": "openai/gpt-oss-20b",
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": "Привет! Как дела?"}
