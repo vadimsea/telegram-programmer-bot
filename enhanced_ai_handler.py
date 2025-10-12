@@ -451,6 +451,29 @@ class EnhancedAIHandler:
                     response = self._augment_with_tone(response, tone)
                 return response, False
 
+            if ("html" in message_lower and "css" in message_lower and
+                    any(word in message_lower for word in ["нач", "start", "уч", "изуч", "learn"])):
+                roadmap = (
+                    "<b>Как начать с HTML и CSS</b>\n"
+                    "• <b>1. Базовая разметка</b> — изучи теги <code>&lt;html&gt;</code>, <code>&lt;head&gt;</code>, "
+                    "<code>&lt;body&gt;</code>, заголовки, параграфы, списки. Закрепи, сверстав «визитку».\n"
+                    "• <b>2. Семантика</b> — используй <code>&lt;header&gt;</code>, <code>&lt;nav&gt;</code>, "
+                    "<code>&lt;main&gt;</code>, <code>&lt;section&gt;</code>, <code>&lt;footer&gt;</code> вместо "
+                    "абстрактных <code>&lt;div&gt;</code>.\n"
+                    "• <b>3. Основы CSS</b> — селекторы, каскад, наследование, единицы измерения, переменные. "
+                    "Попрактикуйся со шрифтами, цветами и отступами.\n"
+                    "• <b>4. Макеты</b> — Flexbox для горизонтальных блоков, CSS Grid для сложных сеток. "
+                    "Создай адаптивный лейаут, используй <code>minmax</code> и <code>auto-fit</code>.\n"
+                    "• <b>5. Практика и ресурсы</b>\n"
+                    "  — freeCodeCamp Responsive Web Design\n"
+                    "  — HTML Academy интерактивные курсы\n"
+                    "  — Книги: «HTML и CSS. Разработка и дизайн веб‑сайтов» Даккетта\n"
+                    "• <b>6. Следующий шаг</b> — проект «одностраничник»: шапка, блок преимуществ, портфолио, форма контактов. "
+                    "Разбей стили на логические модули (base, layout, components).\n"
+                    "Практикуйся ежедневно, сохраняй примеры в репозитории и постепенно добавляй новые приёмы."
+                )
+                return roadmap, False
+
             if "�����������" in message_lower or "calculator" in message_lower:
                 if "javascript" in message_lower or "js" in message_lower:
                     calc_example = ("��� ����������� HTML + JavaScript ��������������� �����������:\n\n"
