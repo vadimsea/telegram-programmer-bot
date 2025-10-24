@@ -228,48 +228,57 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
     try:
         query = update.callback_query
+        logger.info(f"Получен callback: {query.data} от пользователя {query.from_user.first_name}")
+        
         await query.answer()
         
         chat_id = str(update.effective_chat.id)
+        logger.info(f"Chat ID: {chat_id}, ожидаемый: {CHAT_ID}")
         
         # Проверяем, что команда отправлена в нужной группе
         if chat_id != CHAT_ID:
+            logger.warning(f"Callback из неправильной группы: {chat_id}")
             await query.edit_message_text(
-                "👋 Этот бот работает только в группе @learncoding_team"
+                "Этот бот работает только в группе @learncoding_team"
             )
             return
         
         if query.data == "start_course":
+            logger.info("Обрабатываем start_course")
             # Отправляем первый урок
             success = await course_handler.send_lesson(chat_id, course_handler.current_index)
             
             if success:
                 await query.edit_message_text(
-                    "🎉 Отлично! Первый урок отправлен! Проверьте новые сообщения."
+                    "Отлично! Первый урок отправлен! Проверьте новые сообщения."
                 )
             else:
                 await query.edit_message_text(
-                    "❌ Произошла ошибка при отправке урока. Попробуйте позже."
+                    "Произошла ошибка при отправке урока. Попробуйте позже."
                 )
         
         elif query.data.startswith("next_lesson_"):
+            logger.info(f"Обрабатываем {query.data}")
             # Отправляем следующий урок
             lesson_index = int(query.data.split("_")[2])
             success = await course_handler.send_lesson(chat_id, lesson_index)
             
             if success:
                 await query.edit_message_text(
-                    f"📖 Урок {lesson_index + 1} отправлен! Проверьте новые сообщения."
+                    f"Урок {lesson_index + 1} отправлен! Проверьте новые сообщения."
                 )
             else:
                 await query.edit_message_text(
-                    "❌ Произошла ошибка при отправке урока. Попробуйте позже."
+                    "Произошла ошибка при отправке урока. Попробуйте позже."
                 )
+        else:
+            logger.warning(f"Неизвестный callback: {query.data}")
+            await query.answer("Неизвестная команда")
                 
     except Exception as e:
         logger.error(f"Ошибка в обработчике кнопок: {e}")
         if update.callback_query:
-            await update.callback_query.edit_message_text("❌ Произошла ошибка. Попробуйте позже.")
+            await update.callback_query.edit_message_text("Произошла ошибка. Попробуйте позже.")
 
 def setup_course_handlers(application: Application):
     """Настроить обработчики команд курса"""

@@ -778,8 +778,6 @@ async def bot_runner():
         application.add_handler(CommandHandler("admin", admin_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        application.add_handler(CallbackQueryHandler(button_callback))
-        
         # Добавляем обработчики курса
         setup_course_handlers(application)
 
