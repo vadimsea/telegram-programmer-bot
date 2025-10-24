@@ -68,8 +68,8 @@ class CourseHandler:
         
         return {
             'title': f"Урок {idx + 1}. {lesson_data['title']}",
-            'text': lesson_data['theory'],
-            'hw': lesson_data['homework'],
+            'theory': lesson_data['theory'],
+            'homework': lesson_data['homework'],
             'type': lesson_type
         }
     
@@ -85,8 +85,8 @@ class CourseHandler:
             # Формируем сообщение
             message_text = (
                 f"📚 <b>{lesson['title']}</b>\n\n"
-                f"💡 <b>Теория:</b>\n{lesson['text']}\n\n"
-                f"📝 <b>Домашнее задание:</b>\n{lesson['hw']}\n\n"
+                f"💡 <b>Теория:</b>\n{lesson['theory']}\n\n"
+                f"📝 <b>Домашнее задание:</b>\n{lesson['homework']}\n\n"
                 f"✅ <b>Сдаём ДЗ:</b> ответом на это сообщение в этой же группе\n\n"
                 f"🎯 <b>Уровень:</b> {lesson['type']}\n"
                 f"📅 <b>Дата:</b> {datetime.now().strftime('%d.%m.%Y')}"
@@ -245,16 +245,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if query.data == "start_course":
             logger.info("Обрабатываем start_course")
-            # Отправляем первый урок
-            success = await course_handler.send_lesson(chat_id, course_handler.current_index)
-            
-            if success:
+            try:
+                # Отправляем первый урок
+                success = await course_handler.send_lesson(chat_id, course_handler.current_index)
+                
+                if success:
+                    await query.edit_message_text(
+                        "Отлично! Первый урок отправлен! Проверьте новые сообщения."
+                    )
+                else:
+                    await query.edit_message_text(
+                        "Произошла ошибка при отправке урока. Попробуйте позже."
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка в start_course: {e}")
                 await query.edit_message_text(
-                    "Отлично! Первый урок отправлен! Проверьте новые сообщения."
-                )
-            else:
-                await query.edit_message_text(
-                    "Произошла ошибка при отправке урока. Попробуйте позже."
+                    f"Ошибка: {str(e)[:100]}..."
                 )
         
         elif query.data.startswith("next_lesson_"):
