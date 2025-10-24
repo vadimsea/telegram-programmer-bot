@@ -20,6 +20,7 @@ from enhanced_ai_handler import enhanced_ai_handler
 from database import user_db
 from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
+from scheduler_course import run_forever
 
 # Логирование
 logging.basicConfig(
@@ -807,6 +808,9 @@ async def health_handler(request):
 
 
 async def main_entry():
+    # Запускаем планировщик курса в фоне
+    scheduler_task = asyncio.create_task(run_forever())
+    
     bot_task = asyncio.create_task(bot_runner())
 
     app = web.Application()
@@ -824,6 +828,7 @@ async def main_entry():
         await bot_task
     except asyncio.CancelledError:
         bot_task.cancel()
+        scheduler_task.cancel()
         raise
     except Exception:
         logger.exception("Critical error in bot loop")
@@ -833,6 +838,12 @@ async def main_entry():
             bot_task.cancel()
             try:
                 await bot_task
+            except asyncio.CancelledError:
+                pass
+        if not scheduler_task.done():
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
             except asyncio.CancelledError:
                 pass
         await runner.cleanup()

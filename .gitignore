@@ -3,6 +3,9 @@
 .env.local
 .env.production
 
+# Файлы состояния планировщика
+state.json
+
 # Python
 __pycache__/
 *.py[cod]
