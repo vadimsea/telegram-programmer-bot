@@ -111,7 +111,8 @@ class CourseScheduler:
                     data = json.load(f)
                     return data.get('lesson_index', 0)
         except Exception as e:
-            logger.error(f"Ошибка загрузки индекса: {e}")
+            logger.error(f"❌ Ошибка загрузки индекса урока: {e}")
+            logger.error(f"🔧 Создаю новый файл состояния...")
         return 0
     
     def save_index(self, index: int):
@@ -121,7 +122,8 @@ class CourseScheduler:
             with open(STATE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"Ошибка сохранения индекса: {e}")
+            logger.error(f"❌ Ошибка сохранения индекса урока: {e}")
+            logger.error(f"🔧 Проверьте права доступа к файлу {STATE_FILE}")
     
     def make_lesson(self, idx: int) -> Dict[str, str]:
         """Создать урок по индексу (циклически)"""
@@ -151,25 +153,32 @@ class CourseScheduler:
     async def post_lesson(self):
         """Опубликовать урок"""
         if not self.bot or not CHAT_ID:
-            logger.error("Бот или CHAT_ID не настроены")
+            logger.error("❌ Бот или CHAT_ID не настроены")
+            logger.error("🔧 Проверьте настройки в .env файле")
             return
         
         try:
             lesson = self.make_lesson(self.current_index)
             
-            # Формируем текст сообщения
+            # Формируем красивый текст сообщения на русском
             message_text = (
-                f"<b>{lesson['title']}</b>\n\n"
-                f"{lesson['text']}\n\n"
-                f"<b>Домашка:</b> {lesson['hw']}\n\n"
-                f"Сдаём ДЗ ответом на это сообщение в этой же группе."
+                f"📚 <b>{lesson['title']}</b>\n\n"
+                f"💡 <b>Теория:</b>\n{lesson['text']}\n\n"
+                f"📝 <b>Домашнее задание:</b>\n{lesson['hw']}\n\n"
+                f"✅ <b>Сдаём ДЗ:</b> ответом на это сообщение в этой же группе\n\n"
+                f"🎯 <b>Уровень:</b> {lesson['type']}\n"
+                f"📅 <b>Дата:</b> {datetime.now().strftime('%d.%m.%Y')}"
             )
             
-            # Создаем кнопку
+            # Создаем красивую кнопку
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    "Связаться с ментором — бесплатно", 
+                    "👨‍💻 Связаться с ментором — бесплатно", 
                     url="https://t.me/vadzim_belarus"
+                )],
+                [InlineKeyboardButton(
+                    "📚 Все уроки курса", 
+                    url="https://t.me/learncoding_team"
                 )]
             ])
             
@@ -188,27 +197,33 @@ class CourseScheduler:
                     message_id=message.message_id
                 )
             except TelegramError as e:
-                logger.warning(f"Не удалось закрепить сообщение: {e}")
+                logger.warning(f"⚠️ Не удалось закрепить сообщение: {e}")
+                logger.warning(f"🔧 Убедитесь, что бот является администратором группы")
             
-            # Логируем публикацию
-            logger.info(f"📚 Опубликован урок {self.current_index + 1} ({lesson['type']}): {lesson['title']}")
-            logger.info(f"📅 Дата публикации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            # Красивое логирование на русском
+            logger.info(f"🎓 Опубликован урок {self.current_index + 1} ({lesson['type']})")
+            logger.info(f"📖 Тема: {lesson['title']}")
+            logger.info(f"📅 Дата: {datetime.now().strftime('%d.%m.%Y в %H:%M')}")
+            logger.info(f"👥 Группа: @learncoding_team")
             
             # Обновляем индекс и сохраняем
             self.current_index += 1
             self.save_index(self.current_index)
             
         except Exception as e:
-            logger.error(f"Ошибка публикации урока: {e}")
+            logger.error(f"❌ Ошибка публикации урока: {e}")
+            logger.error(f"🔧 Проверьте подключение к Telegram API")
     
     def setup_scheduler(self):
         """Настроить планировщик"""
         if not COURSE_SCHEDULER_ENABLED:
-            logger.info("Планировщик курса отключен")
+            logger.info("⏸️ Планировщик курса отключен в настройках")
+            logger.info("🔧 Для включения установите COURSE_SCHEDULER_ENABLED=1 в .env")
             return
         
         if not BOT_TOKEN or not CHAT_ID:
-            logger.error("BOT_TOKEN или CHAT_ID не настроены")
+            logger.error("❌ BOT_TOKEN или CHAT_ID не настроены в .env файле")
+            logger.error("🔧 Проверьте настройки: BOT_TOKEN и CHAT_ID")
             return
         
         # Планируем первый урок через 5 секунд
@@ -226,7 +241,11 @@ class CourseScheduler:
             id='recurring_lessons'
         )
         
-        logger.info(f"Course scheduler started: every {PERIOD_DAYS} days to CHAT_ID (TZ={TZ})")
+        logger.info(f"🚀 Планировщик курса запущен!")
+        logger.info(f"📅 Период публикации: каждые {PERIOD_DAYS} дней")
+        logger.info(f"🌍 Часовой пояс: {TZ}")
+        logger.info(f"👥 Целевая группа: @learncoding_team")
+        logger.info(f"⏰ Первый урок через 5 секунд...")
     
     async def run_forever(self):
         """Запустить планировщик навсегда"""
@@ -234,15 +253,18 @@ class CourseScheduler:
         
         if not self.scheduler.running:
             self.scheduler.start()
-            logger.info("🚀 Планировщик курса запущен")
+            logger.info("✅ Планировщик курса успешно запущен!")
+            logger.info("🎓 Готов публиковать уроки в группе @learncoding_team")
         
         # Держим процесс живым
         try:
             while True:
                 await asyncio.sleep(60)  # Проверяем каждую минуту
         except KeyboardInterrupt:
-            logger.info("Остановка планировщика...")
+            logger.info("🛑 Получен сигнал остановки...")
+            logger.info("📚 Останавливаем планировщик курса...")
             self.scheduler.shutdown()
+            logger.info("✅ Планировщик успешно остановлен")
 
 
 # Глобальный экземпляр планировщика
