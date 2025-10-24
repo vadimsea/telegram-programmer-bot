@@ -195,8 +195,8 @@ class CourseHandler:
 # Глобальный экземпляр обработчика
 course_handler = CourseHandler()
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start"""
+async def course_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /course"""
     try:
         chat_id = str(update.effective_chat.id)
         
@@ -273,7 +273,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def setup_course_handlers(application: Application):
     """Настроить обработчики команд курса"""
-    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("course", course_start_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     logger.info("Обработчики команд курса настроены")
 
