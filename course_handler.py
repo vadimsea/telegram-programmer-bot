@@ -26,6 +26,7 @@ STATE_FILE = os.getenv('STATE_FILE', 'state.json')
 
 # Данные уроков (импортируем из scheduler_course)
 from scheduler_course import HTML_CSS_LESSONS, JAVASCRIPT_LESSONS
+from user_progress import progress_manager
 
 class CourseHandler:
     """Обработчик команд курса"""
@@ -73,8 +74,8 @@ class CourseHandler:
             'type': lesson_type
         }
     
-    async def send_lesson(self, chat_id: str, lesson_index: int) -> bool:
-        """Отправить урок в чат"""
+    async def send_lesson(self, chat_id: str, lesson_index: int, user_id: int = None) -> bool:
+        """Отправить урок пользователю"""
         if not self.bot:
             logger.error("Бот не инициализирован! Проверьте BOT_TOKEN")
             return False
@@ -145,15 +146,28 @@ class CourseHandler:
         
         try:
             welcome_text = (
-                "🎓 <b>Добро пожаловать в курс веб-разработки!</b>\n\n"
-                "👋 Привет! Я ваш помощник в изучении HTML, CSS и JavaScript.\n\n"
-                "📚 <b>Что вас ждет:</b>\n"
-                "• 11 подробных уроков с теорией и практикой\n"
-                "• Примеры кода и пошаговые инструкции\n"
-                "• Домашние задания для закрепления\n"
-                "• Поддержка ментора\n\n"
-                "🚀 <b>Начните обучение прямо сейчас!</b>\n"
-                "Нажмите кнопку ниже, чтобы получить первый урок."
+                "🎉 <b>Добро пожаловать в курс программирования!</b>\n\n"
+                "👋 <b>Привет!</b> Я ваш персональный помощник в изучении веб-разработки.\n\n"
+                "<b>📚 Что вас ждет:</b>\n"
+                "• HTML/CSS основы\n"
+                "• JavaScript программирование\n"
+                "• Практические задания\n"
+                "• Индивидуальный прогресс\n\n"
+                "<b>🚀 Как начать:</b>\n"
+                "1. Нажмите кнопку \"Начать обучение бесплатно\"\n"
+                "2. Получите свой первый урок\n"
+                "3. Изучайте в своем темпе!\n\n"
+                "<b>💡 Команды:</b>\n"
+                "/progress - ваш прогресс\n"
+                "/next - следующий урок\n"
+                "/reset - начать заново\n\n"
+                "<b>🎯 Особенности:</b>\n"
+                "• Каждый получает уроки по своему прогрессу\n"
+                "• Сотни людей могут учиться одновременно\n"
+                "• Персональная статистика для каждого\n\n"
+                "<b>👨‍💻 Нужна помощь?</b>\n"
+                "Свяжитесь с ментором Вадимом - он всегда поможет!\n\n"
+                "<b>Начнем обучение?</b>"
             )
             
             keyboard = InlineKeyboardMarkup([
@@ -246,16 +260,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if query.data == "start_course":
             logger.info("Обрабатываем start_course")
             try:
-                # Отправляем первый урок
-                success = await course_handler.send_lesson(chat_id, course_handler.current_index)
+                user_id = query.from_user.id
+                # Получаем следующий урок для пользователя
+                next_lesson = progress_manager.get_next_lesson(user_id)
+                
+                # Отправляем урок пользователю
+                success = await course_handler.send_lesson(chat_id, next_lesson, user_id)
                 
                 if success:
+                    # Обновляем прогресс пользователя
+                    progress_manager.update_user_progress(user_id, next_lesson)
+                    
                     await query.edit_message_text(
-                        "Отлично! Первый урок отправлен! Проверьте новые сообщения."
+                        f"✅ Отлично! Урок {next_lesson + 1} отправлен!\n\n"
+                        f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
                     )
                 else:
                     await query.edit_message_text(
-                        "Произошла ошибка при отправке урока. Попробуйте позже."
+                        "❌ Произошла ошибка при отправке урока. Попробуйте позже."
                     )
             except Exception as e:
                 logger.error(f"Ошибка в start_course: {e}")
@@ -265,17 +287,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         elif query.data.startswith("next_lesson_"):
             logger.info(f"Обрабатываем {query.data}")
-            # Отправляем следующий урок
-            lesson_index = int(query.data.split("_")[2])
-            success = await course_handler.send_lesson(chat_id, lesson_index)
-            
-            if success:
+            try:
+                user_id = query.from_user.id
+                lesson_index = int(query.data.split("_")[2])
+                
+                # Отправляем следующий урок пользователю
+                success = await course_handler.send_lesson(chat_id, lesson_index, user_id)
+                
+                if success:
+                    # Обновляем прогресс пользователя
+                    progress_manager.update_user_progress(user_id, lesson_index)
+                    
+                    await query.edit_message_text(
+                        f"✅ Урок {lesson_index + 1} отправлен!\n\n"
+                        f"📊 Ваш прогресс: урок {lesson_index + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
+                    )
+                else:
+                    await query.edit_message_text(
+                        "❌ Произошла ошибка при отправке урока. Попробуйте позже."
+                    )
+            except Exception as e:
+                logger.error(f"Ошибка в next_lesson: {e}")
                 await query.edit_message_text(
-                    f"Урок {lesson_index + 1} отправлен! Проверьте новые сообщения."
-                )
-            else:
-                await query.edit_message_text(
-                    "Произошла ошибка при отправке урока. Попробуйте позже."
+                    f"Ошибка: {str(e)[:100]}..."
                 )
         elif query.data.startswith("check_theory_"):
             logger.info(f"Обрабатываем {query.data}")
@@ -315,9 +349,87 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.callback_query:
             await update.callback_query.edit_message_text("Произошла ошибка. Попробуйте позже.")
 
+async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для просмотра прогресса"""
+    try:
+        user_id = update.effective_user.id
+        stats = progress_manager.get_user_stats(user_id)
+        
+        progress_text = f"""📊 <b>Ваш прогресс в курсе:</b>
+
+🎯 <b>Текущий урок:</b> {stats['current_lesson'] + 1}
+✅ <b>Завершено уроков:</b> {stats['completed_count']}
+📅 <b>Начали обучение:</b> {stats['started_at'][:10]}
+🕐 <b>Последняя активность:</b> {stats['last_activity'][:16]}
+
+<b>Команды:</b>
+/progress - показать этот прогресс
+/reset - сбросить прогресс
+/next - получить следующий урок"""
+        
+        await update.message.reply_text(progress_text, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Ошибка в команде /progress: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для сброса прогресса"""
+    try:
+        user_id = update.effective_user.id
+        progress_manager.reset_user_progress(user_id)
+        
+        await update.message.reply_text(
+            "🔄 Ваш прогресс сброшен!\n\n"
+            "Теперь вы можете начать обучение заново с первого урока."
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка в команде /reset: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения следующего урока"""
+    try:
+        user_id = update.effective_user.id
+        chat_id = str(update.effective_chat.id)
+        
+        # Проверяем, что команда отправлена в нужной группе
+        if chat_id != CHAT_ID:
+            await update.message.reply_text(
+                "👋 Привет! Этот бот работает только в группе @learncoding_team"
+            )
+            return
+        
+        # Получаем следующий урок для пользователя
+        next_lesson = progress_manager.get_next_lesson(user_id)
+        
+        # Отправляем урок пользователю
+        success = await course_handler.send_lesson(chat_id, next_lesson, user_id)
+        
+        if success:
+            # Обновляем прогресс пользователя
+            progress_manager.update_user_progress(user_id, next_lesson)
+            
+            await update.message.reply_text(
+                f"✅ Урок {next_lesson + 1} отправлен!\n\n"
+                f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Произошла ошибка при отправке урока. Попробуйте позже."
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка в команде /next: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
 def setup_course_handlers(application: Application):
     """Настроить обработчики команд курса"""
     application.add_handler(CommandHandler("course", course_start_command))
+    application.add_handler(CommandHandler("progress", progress_command))
+    application.add_handler(CommandHandler("reset", reset_command))
+    application.add_handler(CommandHandler("next", next_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     logger.info("Обработчики команд курса настроены")
 

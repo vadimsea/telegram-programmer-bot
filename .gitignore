@@ -6,6 +6,9 @@
 # Файлы состояния планировщика
 state.json
 
+# Файлы прогресса пользователей
+user_progress.json
+
 # Python
 __pycache__/
 *.py[cod]
