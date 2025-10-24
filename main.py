@@ -21,6 +21,7 @@ from database import user_db
 from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
 from scheduler_course import run_forever
+from course_handler import setup_course_handlers, send_welcome_to_group
 
 # Логирование
 logging.basicConfig(
@@ -778,6 +779,9 @@ async def bot_runner():
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
         application.add_handler(CallbackQueryHandler(button_callback))
+        
+        # Добавляем обработчики курса
+        setup_course_handlers(application)
 
         # Обработчик ошибок
         application.add_error_handler(error_handler)
@@ -788,6 +792,12 @@ async def bot_runner():
 
         logger.info("🤖 Бот запущен! Создан Вадимом (vadzim.by)")
         print("🚀 Бот запущен! Создан Вадимом (vadzim.by)")
+        
+        # Отправляем приветственное сообщение в группу
+        try:
+            await send_welcome_to_group()
+        except Exception as e:
+            logger.error(f"Ошибка отправки приветственного сообщения: {e}")
 
         # Простой цикл ожидания
         while True:

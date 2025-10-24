@@ -25,7 +25,7 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 PERIOD_DAYS = int(os.getenv('PERIOD_DAYS', '4'))
 TZ = os.getenv('TZ', 'Europe/Minsk')
-COURSE_SCHEDULER_ENABLED = os.getenv('COURSE_SCHEDULER_ENABLED', '1') == '1'
+COURSE_SCHEDULER_ENABLED = os.getenv('COURSE_SCHEDULER_ENABLED', '0') == '1'
 STATE_FILE = os.getenv('STATE_FILE', 'state.json')
 
 # Данные уроков

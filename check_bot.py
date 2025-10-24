@@ -13,7 +13,7 @@ async def check_bot_token():
     print("=" * 60)
     
     # Замените на ваш реальный токен
-    BOT_TOKEN = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789"
+    BOT_TOKEN = "8332694363:AAF8W5IofpsVvjWSz1yWBciBBVP_rFrQrFY"
     
     try:
         bot = Bot(token=BOT_TOKEN)
@@ -38,7 +38,7 @@ async def get_chat_id():
     print("ПОЛУЧЕНИЕ CHAT_ID ГРУППЫ")
     print("=" * 60)
     
-    BOT_TOKEN = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789"
+    BOT_TOKEN = "8332694363:AAF8W5IofpsVvjWSz1yWBciBBVP_rFrQrFY"
     
     try:
         bot = Bot(token=BOT_TOKEN)
