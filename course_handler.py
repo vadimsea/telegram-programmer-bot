@@ -161,10 +161,11 @@ class CourseHandler:
                 "/progress - ваш прогресс\n"
                 "/next - следующий урок\n"
                 "/reset - начать заново\n\n"
-                "<b>🎯 Особенности:</b>\n"
+                "<b>🎯 Особенности системы:</b>\n"
                 "• Каждый получает уроки по своему прогрессу\n"
                 "• Сотни людей могут учиться одновременно\n"
-                "• Персональная статистика для каждого\n\n"
+                "• Персональная статистика для каждого\n"
+                "• Защита от спама для стабильной работы\n\n"
                 "<b>👨‍💻 Нужна помощь?</b>\n"
                 "Свяжитесь с ментором Вадимом - он всегда поможет!\n\n"
                 "<b>Начнем обучение?</b>"
@@ -261,6 +262,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("Обрабатываем start_course")
             try:
                 user_id = query.from_user.id
+                
+                # Проверяем лимит запросов
+                if progress_manager.is_rate_limited(user_id, "lesson"):
+                    await query.edit_message_text(
+                        "⏰ Слишком частые запросы!\n\n"
+                        "Вы можете запросить следующий урок только раз в минуту.\n"
+                        "Это защищает систему от перегрузки для всех 567 пользователей."
+                    )
+                    return
+                
                 # Получаем следующий урок для пользователя
                 next_lesson = progress_manager.get_next_lesson(user_id)
                 
@@ -273,7 +284,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     await query.edit_message_text(
                         f"✅ Отлично! Урок {next_lesson + 1} отправлен!\n\n"
-                        f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
+                        f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}\n\n"
+                        f"💡 <b>Совет:</b> Изучите урок внимательно, прежде чем переходить к следующему!"
                     )
                 else:
                     await query.edit_message_text(
@@ -388,6 +400,39 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в команде /reset: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для просмотра статистики группы (только для админов)"""
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверяем, что это админ (Вадим)
+        if user_id != 123456789:  # Замените на реальный ID Вадима
+            await update.message.reply_text(
+                "❌ Эта команда доступна только администраторам."
+            )
+            return
+        
+        # Получаем статистику группы
+        group_stats = progress_manager.get_group_stats()
+        
+        stats_text = f"""📊 <b>СТАТИСТИКА ГРУППЫ</b>
+
+👥 <b>Всего пользователей:</b> {group_stats['total_users']}
+🟢 <b>Активных пользователей:</b> {group_stats['active_users']}
+📚 <b>Всего уроков запрошено:</b> {group_stats['total_lessons_requested']}
+📈 <b>Среднее уроков на пользователя:</b> {group_stats['average_lessons_per_user']:.1f}
+
+<b>💡 Анализ:</b>
+• Активность: {group_stats['active_users']/group_stats['total_users']*100:.1f}% пользователей активны
+• Прогресс: {group_stats['average_lessons_per_user']:.1f} уроков в среднем
+• Система работает стабильно для {group_stats['total_users']} пользователей"""
+        
+        await update.message.reply_text(stats_text, parse_mode='HTML')
+        
+    except Exception as e:
+        logger.error(f"Ошибка в команде /stats: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
 async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для получения следующего урока"""
     try:
@@ -398,6 +443,15 @@ async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_id != CHAT_ID:
             await update.message.reply_text(
                 "👋 Привет! Этот бот работает только в группе @learncoding_team"
+            )
+            return
+        
+        # Проверяем лимит запросов
+        if progress_manager.is_rate_limited(user_id, "lesson"):
+            await update.message.reply_text(
+                "⏰ Слишком частые запросы!\n\n"
+                "Вы можете запросить следующий урок только раз в минуту.\n"
+                "Это защищает систему от перегрузки для всех 567 пользователей."
             )
             return
         
@@ -413,7 +467,8 @@ async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(
                 f"✅ Урок {next_lesson + 1} отправлен!\n\n"
-                f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
+                f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}\n\n"
+                f"💡 <b>Совет:</b> Изучите урок внимательно, прежде чем переходить к следующему!"
             )
         else:
             await update.message.reply_text(
@@ -430,6 +485,7 @@ def setup_course_handlers(application: Application):
     application.add_handler(CommandHandler("progress", progress_command))
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("next", next_command))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     logger.info("Обработчики команд курса настроены")
 
