@@ -143,15 +143,16 @@ class UserDatabase:
             try:
                 worksheet = spreadsheet.worksheet(worksheet_title)
             except gspread.WorksheetNotFound:
-            worksheet = spreadsheet.add_worksheet(title=worksheet_title, rows="1000", cols="20")
-            worksheet.update("A1", [SHEET_HEADERS])
-        logger.info("Google Sheets DB initialized successfully")
-        logger.info("Using worksheet: %s", worksheet_title)
-    except Exception as exc:  # pragma: no cover - relies on external API
-        logger.error("Failed to initialise Google Sheets backend: %s", exc)
-        return False
+                worksheet = spreadsheet.add_worksheet(title=worksheet_title, rows="1000", cols="20")
+                worksheet.update("A1", [SHEET_HEADERS])
 
-    self._worksheet = worksheet
+            logger.info("Google Sheets DB initialized successfully")
+            logger.info("Using worksheet: %s", worksheet_title)
+        except Exception as exc:  # pragma: no cover - relies on external API
+            logger.error("Failed to initialise Google Sheets backend: %s", exc)
+            return False
+
+        self._worksheet = worksheet
         self._use_sheets = True
         return True
 
