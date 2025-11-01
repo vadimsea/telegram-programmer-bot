@@ -22,6 +22,7 @@ from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
 from scheduler_course import run_forever
 from course_handler import setup_course_handlers, send_welcome_to_group
+from permissions import is_admin_identity
 
 # Логирование
 logging.basicConfig(
@@ -242,6 +243,16 @@ def get_user_context(user_id: int) -> UserContext:
     return context
 
 
+def is_admin_user(telegram_user) -> bool:
+    """Check whether the provided Telegram user has admin privileges."""
+    if telegram_user is None:
+        return False
+    return is_admin_identity(
+        getattr(telegram_user, "id", None),
+        getattr(telegram_user, "username", None),
+    )
+
+
 def get_main_keyboard():
     keyboard = [
         [InlineKeyboardButton("👨‍💻 Связаться с создателем", url=f"tg://resolve?domain={CREATOR_USERNAME[1:]}")],
@@ -256,10 +267,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "admin_export_csv":
-        username = query.from_user.username
-        if username != CREATOR_USERNAME[1:]:
-            await query.answer("Нет доступа", show_alert=True)
+        if not is_admin_user(query.from_user):
+            await query.answer("Only the administrator can download reports.", show_alert=True)
             return
+
+        message = query.message
+        chat = getattr(message, "chat", None)
+        if chat and getattr(chat, "type", None) != "private":
+            await query.answer("Open a private chat with the bot to download the CSV.", show_alert=True)
+            return
+
+        if message is None:
+            await query.answer("CSV export is not available in this context.", show_alert=True)
+            return
+
         await query.answer()
         await _send_admin_export_csv(query)
         return
@@ -681,12 +702,18 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Команда /admin - статистика для админа (только для создателя)
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
 
-    # Проверяем, что это создатель бота
-    if username != CREATOR_USERNAME[1:]:  # Убираем @ из начала
-        await update.message.reply_text("❌ Доступ запрещен")
+    if not is_admin_user(user):
+        if message:
+            await message.reply_text("Only the administrator can open statistics.")
+        return
+
+    if chat and getattr(chat, "type", None) != "private":
+        if message:
+            await message.reply_text("Open a private chat with the bot to view the admin statistics.")
         return
 
     total_users = user_db.get_all_users_count()
@@ -703,7 +730,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📄 Экспорт CSV", callback_data="admin_export_csv")]
     ])
 
-    await update.message.reply_text(admin_text, reply_markup=keyboard)
+    await (message or update.message).reply_text(admin_text, reply_markup=keyboard)
 
 
 async def _send_admin_export_csv(query):
@@ -776,6 +803,7 @@ async def bot_runner():
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("settings", settings_command))  # Added settings command
         application.add_handler(CommandHandler("admin", admin_command))
+        application.add_handler(CallbackQueryHandler(button_callback, pattern=r"^(admin_|feedback_)"))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
         # Добавляем обработчики курса
