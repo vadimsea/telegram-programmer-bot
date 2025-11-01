@@ -20,6 +20,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+try:
+    from config import TELEGRAM_GROUP_USERNAME  # type: ignore
+except Exception:
+    raw_group_username = os.getenv('TELEGRAM_GROUP_USERNAME', '@learncoding_team') or '@learncoding_team'
+    raw_group_username = raw_group_username.strip() or '@learncoding_team'
+    if not raw_group_username.startswith('@'):
+        raw_group_username = f'@{raw_group_username}'
+    TELEGRAM_GROUP_USERNAME = raw_group_username
 # Конфигурация
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
@@ -1019,7 +1027,7 @@ class CourseScheduler:
             logger.info(f"🎓 Опубликован урок {self.current_index + 1} ({lesson['type']})")
             logger.info(f"📖 Тема: {lesson['title']}")
             logger.info(f"📅 Дата: {datetime.now().strftime('%d.%m.%Y в %H:%M')}")
-            logger.info(f"👥 Группа: @learncoding_team")
+            logger.info(f"👥 Группа: {TELEGRAM_GROUP_USERNAME}")
             
             # Обновляем индекс и сохраняем
             self.current_index += 1
@@ -1059,7 +1067,7 @@ class CourseScheduler:
         logger.info(f"🚀 Планировщик курса запущен!")
         logger.info(f"📅 Период публикации: каждые {PERIOD_DAYS} дней")
         logger.info(f"🌍 Часовой пояс: {TZ}")
-        logger.info(f"👥 Целевая группа: @learncoding_team")
+        logger.info(f"👥 Целевая группа: {TELEGRAM_GROUP_USERNAME}")
         logger.info(f"⏰ Первый урок через 5 секунд...")
     
     async def run_forever(self):
@@ -1069,7 +1077,7 @@ class CourseScheduler:
         if not self.scheduler.running:
             self.scheduler.start()
             logger.info("✅ Планировщик курса успешно запущен!")
-            logger.info("🎓 Готов публиковать уроки в группе @learncoding_team")
+            logger.info(f"🎓 Готов публиковать уроки в группе {TELEGRAM_GROUP_USERNAME}")
         
         # Держим процесс живым
         try:

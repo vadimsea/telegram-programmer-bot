@@ -14,8 +14,18 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.error import TelegramError
 
+from permissions import is_admin_identity
 # Загружаем переменные окружения
 load_dotenv()
+
+try:
+    from config import TELEGRAM_GROUP_USERNAME  # type: ignore
+except Exception:
+    raw_group_username = os.getenv('TELEGRAM_GROUP_USERNAME', '@learncoding_team') or '@learncoding_team'
+    raw_group_username = raw_group_username.strip() or '@learncoding_team'
+    if not raw_group_username.startswith('@'):
+        raw_group_username = f'@{raw_group_username}'
+    TELEGRAM_GROUP_USERNAME = raw_group_username
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +228,7 @@ async def course_start_command(update: Update, context: ContextTypes.DEFAULT_TYP
         # Проверяем, что команда отправлена в нужной группе
         if chat_id != CHAT_ID:
             await update.message.reply_text(
-                "👋 Привет! Этот бот работает только в группе @learncoding_team"
+                f"👋 Привет! Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
             )
             return
         
@@ -254,7 +264,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_id != CHAT_ID:
             logger.warning(f"Callback из неправильной группы: {chat_id}")
             await query.edit_message_text(
-                "Этот бот работает только в группе @learncoding_team"
+                f"Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
             )
             return
         
@@ -400,13 +410,50 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в команде /reset: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
+async def send_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для отправки кнопки 'Учиться бесплатно' (только для админов)"""
+    try:
+        user_id = update.effective_user.id
+        
+        # Проверяем, что это админ (Вадим)
+        if not is_admin_identity(user_id, getattr(update.effective_user, "username", None)):
+            await update.message.reply_text(
+                "❌ Эта команда доступна только администраторам."
+            )
+            return
+        
+        chat_id = str(update.effective_chat.id)
+        
+        # Проверяем, что команда отправлена в нужной группе
+        if chat_id != CHAT_ID:
+            await update.message.reply_text(
+                f"👋 Эта команда работает только в группе {TELEGRAM_GROUP_USERNAME}"
+            )
+            return
+        
+        # Отправляем кнопку
+        success = await course_handler.send_welcome_message(chat_id)
+        
+        if success:
+            await update.message.reply_text(
+                "✅ Кнопка 'Учиться бесплатно' отправлена в группу!"
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Произошла ошибка при отправке кнопки."
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка в команде /sendbutton: {e}")
+        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда для просмотра статистики группы (только для админов)"""
     try:
         user_id = update.effective_user.id
         
         # Проверяем, что это админ (Вадим)
-        if user_id != 123456789:  # Замените на реальный ID Вадима
+        if not is_admin_identity(user_id, getattr(update.effective_user, "username", None)):
             await update.message.reply_text(
                 "❌ Эта команда доступна только администраторам."
             )
@@ -442,7 +489,7 @@ async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем, что команда отправлена в нужной группе
         if chat_id != CHAT_ID:
             await update.message.reply_text(
-                "👋 Привет! Этот бот работает только в группе @learncoding_team"
+                f"👋 Привет! Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
             )
             return
         
@@ -486,6 +533,7 @@ def setup_course_handlers(application: Application):
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("next", next_command))
     application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("sendbutton", send_button_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     logger.info("Обработчики команд курса настроены")
 

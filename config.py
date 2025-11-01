@@ -49,6 +49,55 @@ def _get_env(name: str, default: Optional[str] = None) -> Optional[str]:
     return os.getenv(name, default)
 
 
+def _get_int_env(name: str, default: Optional[str] = None) -> Optional[int]:
+    """Fetch an optional integer environment variable."""
+    value = _get_env(name, default)
+    if value is None or value.strip() == '':
+        return None
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(
+            f'Environment variable {name} must be an integer, got {value!r}.'
+        ) from exc
+
+
+def _get_int_list_env(name: str) -> tuple[int, ...]:
+    """Fetch a whitespace or comma separated list of integers from the environment."""
+    raw_value = _get_env(name)
+    if not raw_value:
+        return tuple()
+
+    items = []
+    for token in raw_value.replace(',', ' ').split():
+        if not token:
+            continue
+        try:
+            items.append(int(token))
+        except ValueError as exc:
+            raise RuntimeError(
+                f'Environment variable {name} must contain only integers, got {token!r}.'
+            ) from exc
+
+    return tuple(items)
+
+
+def _normalize_username(value: Optional[str], default: str) -> str:
+    """Return a Telegram-style username, ensuring it includes the @ prefix."""
+    if not value:
+        return default
+
+    normalized = value.strip()
+    if not normalized:
+        return default
+
+    if not normalized.startswith('@'):
+        normalized = f'@{normalized}'
+
+    return normalized
+
+
 TELEGRAM_TOKEN = _require_env('TELEGRAM_TOKEN')
 GROQ_API_KEY = _require_env('GROQ_API_KEY')
 HUGGING_FACE_TOKEN = _require_env('HUGGING_FACE_TOKEN')
@@ -62,8 +111,14 @@ MAX_MESSAGE_LENGTH = int(_get_env('MAX_MESSAGE_LENGTH', '4000'))
 MAX_CONTEXT_MESSAGES = int(_get_env('MAX_CONTEXT_MESSAGES', '10'))
 
 CREATOR_USERNAME = _get_env('CREATOR_USERNAME', '@vadzim_belarus')
+TELEGRAM_GROUP_USERNAME = _normalize_username(
+    _get_env('TELEGRAM_GROUP_USERNAME', '@learncoding_team'),
+    '@learncoding_team'
+)
 TELEGRAM_CHANNEL = _get_env('TELEGRAM_CHANNEL', 'https://t.me/vadzimby_live')
 WEBSITE_URL = _get_env('WEBSITE_URL', 'https://vadzim.by/')
+CREATOR_USER_ID = _get_int_env('CREATOR_USER_ID')
+ADMIN_USER_IDS = _get_int_list_env('ADMIN_USER_IDS')
 
 SYSTEM_PROMPT = '''Ты — экспертный помощник по программированию по имени "Помощник Программиста". Тебя создал разработчик Вадим (vadzim.by), и ты всегда с уважением упоминаешь его, когда речь заходит о создателе или источнике знаний.
 
