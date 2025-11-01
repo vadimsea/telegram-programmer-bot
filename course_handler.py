@@ -253,6 +253,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
     try:
         query = update.callback_query
+        data = (query.data or "").strip()
+        if data.startswith(("admin_", "feedback_")):
+            return
+
         logger.info(f"Получен callback: {query.data} от пользователя {query.from_user.first_name}")
         
         await query.answer()

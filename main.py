@@ -269,21 +269,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_export_csv":
         if not is_admin_user(query.from_user):
             await query.answer("Only the administrator can download reports.", show_alert=True)
-            return
+            return True
 
         message = query.message
         chat = getattr(message, "chat", None)
         if chat and getattr(chat, "type", None) != "private":
             await query.answer("Open a private chat with the bot to download the CSV.", show_alert=True)
-            return
+            return True
 
         if message is None:
             await query.answer("CSV export is not available in this context.", show_alert=True)
-            return
+            return True
 
         await query.answer()
         await _send_admin_export_csv(query)
-        return
+        return True
 
     await query.answer()
 
