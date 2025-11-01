@@ -32,6 +32,9 @@ cp .env.example .env
 TELEGRAM_TOKEN=...
 GROQ_API_KEY=...
 HUGGING_FACE_TOKEN=...
+# Optional admin settings
+CREATOR_USER_ID=
+ADMIN_USER_IDS=
 ```
 
 ## 5. Проверка ключей

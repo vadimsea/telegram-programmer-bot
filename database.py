@@ -1,118 +1,136 @@
-"""
-Простая база данных для хранения пользовательских данных
-"""
+"""Persistent user database helper with optional external storage path."""
 
+from __future__ import annotations
+
+import atexit
 import json
-import os
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
+from threading import RLock
 from typing import Dict, List, Optional
+
+DEFAULT_DB_FILE = "users.json"
+ENV_DB_FILE_VAR = "USER_DB_FILE"
 
 logger = logging.getLogger(__name__)
 
 
 class UserDatabase:
-    """Простая файловая база данных для пользователей"""
+    """Simple JSON-backed storage for user statistics with thread-safety."""
 
-    def __init__(self, db_file: str = "users.json"):
-        self.db_file = db_file
-        self.users_data = self._load_data()
+    def __init__(self, db_file: Optional[str] = None) -> None:
+        path = (db_file or os.getenv(ENV_DB_FILE_VAR) or DEFAULT_DB_FILE).strip()
+        if not path:
+            path = DEFAULT_DB_FILE
 
-    def _load_data(self) -> Dict:
-        """Загрузить данные из файла"""
+        if os.path.isdir(path):
+            path = os.path.join(path, DEFAULT_DB_FILE)
+
+        directory = os.path.dirname(os.path.abspath(path))
+        if directory and not os.path.exists(directory):
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError as exc:
+                logger.error("Failed to create directory for user DB at %s: %s", directory, exc)
+
+        self.db_file = path
+        self._lock = RLock()
+        self.users_data: Dict[str, Dict] = self._load_data()
+        atexit.register(self._save_data)
+
+    def _load_data(self) -> Dict[str, Dict]:
         if os.path.exists(self.db_file):
             try:
-                with open(self.db_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Error loading database: {e}")
-                return {}
+                with open(self.db_file, "r", encoding="utf-8") as fh:
+                    return json.load(fh)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.error("Error loading database %s: %s", self.db_file, exc)
         return {}
 
-    def _save_data(self):
-        """Сохранить данные в файл"""
-        try:
-            with open(self.db_file, 'w', encoding='utf-8') as f:
-                json.dump(self.users_data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving database: {e}")
+    def _save_data(self) -> None:
+        with self._lock:
+            try:
+                with open(self.db_file, "w", encoding="utf-8") as fh:
+                    json.dump(self.users_data, fh, ensure_ascii=False, indent=2)
+            except OSError as exc:
+                logger.error("Error saving database %s: %s", self.db_file, exc)
 
     def get_user(self, user_id: int) -> Dict:
-        """Получить данные пользователя"""
         user_key = str(user_id)
-        if user_key not in self.users_data:
-            self.users_data[user_key] = {
-                'user_id': user_id,
-                'created_at': datetime.now().isoformat(),
-                'preferred_language': None,
-                'skill_level': 'intermediate',
-                'total_questions': 0,
-                'favorite_topics': [],
-                'last_active': datetime.now().isoformat()
-            }
+        with self._lock:
+            if user_key not in self.users_data:
+                now_iso = datetime.now().isoformat()
+                self.users_data[user_key] = {
+                    "user_id": user_id,
+                    "created_at": now_iso,
+                    "preferred_language": None,
+                    "skill_level": "intermediate",
+                    "total_questions": 0,
+                    "favorite_topics": [],
+                    "last_active": now_iso,
+                }
+                self._save_data()
+            return self.users_data[user_key]
+
+    def update_user(self, user_id: int, updates: Dict) -> None:
+        user_key = str(user_id)
+        with self._lock:
+            record = self.users_data.get(user_key) or self.get_user(user_id)
+            record.update(updates)
+            record["last_active"] = datetime.now().isoformat()
+            self.users_data[user_key] = record
             self._save_data()
 
-        return self.users_data[user_key]
+    def increment_questions(self, user_id: int) -> None:
+        user_key = str(user_id)
+        with self._lock:
+            record = self.users_data.get(user_key) or self.get_user(user_id)
+            record["total_questions"] = record.get("total_questions", 0) + 1
+            record["last_active"] = datetime.now().isoformat()
+            self.users_data[user_key] = record
+            self._save_data()
 
-    def update_user(self, user_id: int, updates: Dict):
-        """Обновить данные пользователя"""
-        user_data = self.get_user(user_id)
-        user_data.update(updates)
-        user_data['last_active'] = datetime.now().isoformat()
-        self._save_data()
-
-    def increment_questions(self, user_id: int):
-        """Увеличить счетчик вопросов"""
-        user_data = self.get_user(user_id)
-        user_data['total_questions'] += 1
-        self._save_data()
-
-    def add_topic_interest(self, user_id: int, topic: str):
-        """Добавить интерес к теме"""
-        user_data = self.get_user(user_id)
-        if 'favorite_topics' not in user_data:
-            user_data['favorite_topics'] = []
-
-        if topic not in user_data['favorite_topics']:
-            user_data['favorite_topics'].append(topic)
-            # Ограничиваем до 10 тем
-            if len(user_data['favorite_topics']) > 10:
-                user_data['favorite_topics'] = user_data['favorite_topics'][-10:]
-
-            logger.info(f"📝 Пользователь {user_id} проявил интерес к теме: {topic}")
-
-        self._save_data()
+    def add_topic_interest(self, user_id: int, topic: str) -> None:
+        user_key = str(user_id)
+        with self._lock:
+            record = self.users_data.get(user_key) or self.get_user(user_id)
+            topics = record.setdefault("favorite_topics", [])
+            if topic not in topics:
+                topics.append(topic)
+                record["favorite_topics"] = topics[-10:]  # keep last 10
+                logger.info("User %s added topic interest %s", user_id, topic)
+            record["last_active"] = datetime.now().isoformat()
+            self.users_data[user_key] = record
+            self._save_data()
 
     def get_user_stats(self, user_id: int) -> Dict:
-        """Получить статистику пользователя"""
-        user_data = self.get_user(user_id)
-
+        record = self.get_user(user_id)
         return {
-            'total_questions': user_data.get('total_questions', 0),
-            'favorite_topics': user_data.get('favorite_topics', []),
-            'preferred_language': user_data.get('preferred_language'),
-            'skill_level': user_data.get('skill_level', 'intermediate'),
-            'member_since': user_data.get('created_at', 'Unknown')
+            "total_questions": record.get("total_questions", 0),
+            "favorite_topics": record.get("favorite_topics", []),
+            "preferred_language": record.get("preferred_language"),
+            "skill_level": record.get("skill_level", "intermediate"),
+            "member_since": record.get("created_at", "Unknown"),
         }
 
     def get_all_users_count(self) -> int:
-        """Получить общее количество пользователей"""
-        return len(self.users_data)
+        with self._lock:
+            return len(self.users_data)
 
     def get_active_users(self, days: int = 7) -> List[Dict]:
-        """Получить активных пользователей за последние дни"""
-        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(days=days)
+        active: List[Dict] = []
+        with self._lock:
+            for record in self.users_data.values():
+                last_active_str = record.get("last_active")
+                try:
+                    last_active = datetime.fromisoformat(last_active_str) if last_active_str else None
+                except ValueError:
+                    last_active = None
+                if last_active and last_active > cutoff:
+                    active.append(dict(record))
+        return active
 
-        cutoff_date = datetime.now() - timedelta(days=days)
-        active_users = []
 
-        for user_data in self.users_data.values():
-            last_active = datetime.fromisoformat(user_data.get('last_active', '2020-01-01'))
-            if last_active > cutoff_date:
-                active_users.append(user_data)
-
-        return active_users
-
-
-# Глобальный экземпляр базы данных
 user_db = UserDatabase()
