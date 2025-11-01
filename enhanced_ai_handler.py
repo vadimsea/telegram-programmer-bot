@@ -252,8 +252,80 @@ class EnhancedAIHandler:
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
     def _match_small_talk(self, message_lower: str) -> Optional[str]:
+        trimmed = message_lower.strip()
+        if not trimmed:
+            return None
+
+        if "?" in trimmed:
+            return None
+
+        intent_keywords = (
+            "что",
+            "кто",
+            "как",
+            "зачем",
+            "почему",
+            "передай",
+            "расскажи",
+            "скажи",
+            "подскажи",
+            "напиши",
+            "сделай",
+            "создай",
+            "игру",
+            "сделать",
+            "объясни",
+            "о ",
+            "про ",
+        )
+        if any(keyword in trimmed for keyword in intent_keywords):
+            return None
+
+        cleaned = re.sub(r"[^a-zа-яё0-9\s]", " ", trimmed, flags=re.IGNORECASE)
+        tokens = [token for token in cleaned.split() if token]
+
+        if not tokens:
+            return None
+
+        greeting_tokens = {
+            "привет",
+            "прив",
+            "здорово",
+            "здравствуй",
+            "здравствуйте",
+            "hi",
+            "hello",
+            "hey",
+            "хай",
+            "салют",
+            "ку",
+            "qq",
+            "добрый",
+            "доброе",
+            "добр",
+            "утро",
+            "вечер",
+            "день",
+        }
+
+        if len(tokens) > 3 and not set(tokens).issubset(greeting_tokens):
+            return None
+
+        non_greeting = [token for token in tokens if token not in greeting_tokens]
+        allowed_pairs = {
+            ("доброе", "утро"),
+            ("добрый", "день"),
+            ("добрый", "вечер"),
+        }
+        if non_greeting:
+            if len(tokens) <= 3 and tuple(tokens) in allowed_pairs:
+                non_greeting = []
+
+        if non_greeting:
+            return None
+
         for preset in self.SMALL_TALK_PRESETS:
-            if any(trigger in message_lower for trigger in preset["triggers"]):
+            if any(trigger in trimmed for trigger in preset["triggers"]):
                 return random.choice(preset["responses"])
         return None
 
