@@ -772,7 +772,7 @@ async def _send_admin_export_csv(query):
 
     buffer = BytesIO(stream.getvalue().encode("utf-8"))
     buffer.seek(0)
-    filename = f"users_export_{datetime.utcnow():%Y%m%d_%H%M%S}.csv"
+    filename = f"users_export_{datetime.now(datetime.UTC):%Y%m%d_%H%M%S}.csv"
 
     await query.message.reply_document(
         document=InputFile(buffer, filename=filename),

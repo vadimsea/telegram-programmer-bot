@@ -51,3 +51,10 @@ python test_models.py
 - При ошибках 401/403 убедитесь, что аккаунт подтверждён и модель доступна для вашего токена.
 
 Удачи с деплоем!
+
+## 7. Google Sheets Storage (optional)
+1. Enable the Google Sheets API in a Google Cloud project and create a service account.
+2. Generate a JSON key for the service account and share the target spreadsheet with the service-account e-mail.
+3. Base64-encode the JSON and place the result into the GOOGLE_SHEETS_CREDENTIALS environment variable (example on macOS/Linux: base64 -w0 service-account.json).
+4. Set GOOGLE_SHEETS_SPREADSHEET to the spreadsheet URL, key, or name and GOOGLE_SHEETS_WORKSHEET to the tab title (defaults to Users).
+5. On Render, add the variables under **Environment** and redeploy. The bot will now persist user statistics directly to the specified sheet.
