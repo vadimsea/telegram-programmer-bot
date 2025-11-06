@@ -271,77 +271,66 @@ class EnhancedAIHandler:
         if not trimmed:
             return None
 
+        # Сначала проверяем small talk пресеты БЕЗ учета знаков препинания
+        # Это позволяет распознавать "как дела?" так же как "как дела"
+        trimmed_for_check = trimmed.rstrip('?.,!')
+        
+        for preset in self.SMALL_TALK_PRESETS:
+            for trigger in preset["triggers"]:
+                # Проверяем как точное совпадение, так и вхождение в текст
+                if trigger == trimmed_for_check or trigger in trimmed_for_check:
+                    return random.choice(preset["responses"])
+
+        # Если это не small talk, но содержит "?", это может быть вопрос
+        # Простые small talk вопросы уже обработаны выше
         if "?" in trimmed:
+            # Проверяем, не является ли это простым small talk вопросом
+            simple_questions = ("как дела", "как жизнь", "как ты", "как настроение", 
+                              "что делаешь", "чем занимаешься", "что нового", "какие новости")
+            trimmed_no_punct = trimmed.rstrip('?.,!').strip()
+            
+            # Проверяем каждый простой вопрос
+            for q in simple_questions:
+                if q in trimmed_no_punct or trimmed_no_punct == q:
+                    # Нашли простой small talk вопрос - ищем соответствующий пресет
+                    for preset in self.SMALL_TALK_PRESETS:
+                        for trigger in preset["triggers"]:
+                            if q in trigger or trigger in q:
+                                return random.choice(preset["responses"])
+                    # Если не нашли точный пресет, возвращаем общий friendly ответ
+                    return "Всё отлично! 😊 Готов помочь с программированием. Что у тебя на уме?"
+            
+            # Если это технический вопрос с "?", пропускаем small talk
             return None
 
+        # Проверяем на технические ключевые слова только если это не small talk
         intent_keywords = (
-            "что",
-            "кто",
-            "как",
-            "зачем",
-            "почему",
+            "что такое",
+            "кто такой",
+            "как создать",
+            "как сделать",
+            "как написать",
+            "как использовать",
+            "зачем нужен",
+            "почему не работает",
             "передай",
-            "расскажи",
-            "скажи",
-            "подскажи",
-            "напиши",
-            "сделай",
+            "расскажи про",
+            "скажи про",
+            "подскажи как",
+            "напиши код",
+            "сделай программу",
             "создай",
             "игру",
-            "сделать",
-            "объясни",
-            "о ",
-            "про ",
+            "объясни код",
+            "о программировании",
+            "про python",
+            "про javascript",
         )
+        
+        # Проверяем только если есть технические ключевые слова
         if any(keyword in trimmed for keyword in intent_keywords):
             return None
 
-        cleaned = re.sub(r"[^a-zа-яё0-9\s]", " ", trimmed, flags=re.IGNORECASE)
-        tokens = [token for token in cleaned.split() if token]
-
-        if not tokens:
-            return None
-
-        greeting_tokens = {
-            "привет",
-            "прив",
-            "здорово",
-            "здравствуй",
-            "здравствуйте",
-            "hi",
-            "hello",
-            "hey",
-            "хай",
-            "салют",
-            "ку",
-            "qq",
-            "добрый",
-            "доброе",
-            "добр",
-            "утро",
-            "вечер",
-            "день",
-        }
-
-        if len(tokens) > 3 and not set(tokens).issubset(greeting_tokens):
-            return None
-
-        non_greeting = [token for token in tokens if token not in greeting_tokens]
-        allowed_pairs = {
-            ("доброе", "утро"),
-            ("добрый", "день"),
-            ("добрый", "вечер"),
-        }
-        if non_greeting:
-            if len(tokens) <= 3 and tuple(tokens) in allowed_pairs:
-                non_greeting = []
-
-        if non_greeting:
-            return None
-
-        for preset in self.SMALL_TALK_PRESETS:
-            if any(trigger in trimmed for trigger in preset["triggers"]):
-                return random.choice(preset["responses"])
         return None
 
     def _detect_message_tone(self, message_lower: str) -> Optional[str]:
