@@ -19,18 +19,19 @@ from permissions import is_admin_identity
 load_dotenv()
 
 try:
-    from config import TELEGRAM_GROUP_USERNAME  # type: ignore
+    from config import TELEGRAM_GROUP_USERNAME, TELEGRAM_TOKEN  # type: ignore
 except Exception:
     raw_group_username = os.getenv('TELEGRAM_GROUP_USERNAME', '@learncoding_team') or '@learncoding_team'
     raw_group_username = raw_group_username.strip() or '@learncoding_team'
     if not raw_group_username.startswith('@'):
         raw_group_username = f'@{raw_group_username}'
     TELEGRAM_GROUP_USERNAME = raw_group_username
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN')
 
 logger = logging.getLogger(__name__)
 
-# Конфигурация
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+# Конфигурация - используем TELEGRAM_TOKEN из config, fallback на BOT_TOKEN для совместимости
+BOT_TOKEN = TELEGRAM_TOKEN if 'TELEGRAM_TOKEN' in locals() else (os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN'))
 CHAT_ID = os.getenv('CHAT_ID')
 STATE_FILE = os.getenv('STATE_FILE', 'state.json')
 
@@ -90,8 +91,16 @@ class CourseHandler:
             logger.error("Бот не инициализирован! Проверьте BOT_TOKEN")
             return False
         
+        if not chat_id:
+            logger.error("Chat ID не указан")
+            return False
+        
         try:
             lesson = self.make_lesson(lesson_index)
+            
+            if not lesson:
+                logger.error(f"Не удалось создать урок с индексом {lesson_index}")
+                return False
             
             # Формируем сообщение
             message_text = (

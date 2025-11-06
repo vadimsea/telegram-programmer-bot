@@ -204,6 +204,21 @@ class EnhancedAIHandler:
             "🧘 Понимаю боль. Скинь стек или фрагмент кода, и вместе найдём слабое место.",
             "🛟 Расскажи подробности: язык, фреймворк, что в ошибке. Помогу навести порядок.",
         ],
+        "frustrated": [
+            "😤 Понимаю, как это бесит. Давай по шагам разберём проблему — вместе точно решим.",
+            "💪 Знаю, что это утомительно. Но мы справимся! Опиши, что именно не работает.",
+            "🤗 Бывает. Не переживай — такие баги встречаются у всех. Давай найдём причину.",
+        ],
+        "excited": [
+            "🔥 Отлично! Вижу, что ты вдохновлён. Давай сделаем это ещё лучше!",
+            "⚡ Здорово, что ты так заинтересован! Готов помочь углубиться в тему.",
+            "🎯 Круто! Давай разберём это детально и сделаем что-то действительно стоящее.",
+        ],
+        "confused": [
+            "🤔 Ничего страшного, все когда-то начинали. Давай разберём по шагам.",
+            "💡 Понимаю, что может быть непонятно. Объясню простыми словами с примерами.",
+            "📚 Это нормально задавать вопросы! Давай разберём вместе, что именно непонятно.",
+        ],
     }
 
     PERSONAL_TIPS = {
@@ -330,10 +345,25 @@ class EnhancedAIHandler:
         return None
 
     def _detect_message_tone(self, message_lower: str) -> Optional[str]:
+        """Определяет эмоциональный тон сообщения"""
         if any(keyword in message_lower for keyword in self.NEGATIVE_KEYWORDS):
             return "negative"
         if any(keyword in message_lower for keyword in self.POSITIVE_KEYWORDS):
             return "positive"
+        
+        # Дополнительные признаки эмоций
+        frustration_words = ["блять", "черт", "долбаный", "ненавижу", "бесит", "устал", "надоело"]
+        if any(word in message_lower for word in frustration_words):
+            return "frustrated"
+        
+        excited_words = ["вау", "круто", "супер", "отлично", "класс", "здорово", "ура"]
+        if any(word in message_lower for word in excited_words):
+            return "excited"
+        
+        confused_words = ["не понимаю", "не понял", "запутался", "не знаю", "как это", "что это"]
+        if any(phrase in message_lower for phrase in confused_words):
+            return "confused"
+        
         return None
 
     def _augment_with_tone(self, response: str, tone: str) -> str:
@@ -546,20 +576,20 @@ class EnhancedAIHandler:
                 )
                 return roadmap, False
 
-            if "�����������" in message_lower or "calculator" in message_lower:
+            if "калькулятор" in message_lower or "calculator" in message_lower:
                 if "javascript" in message_lower or "js" in message_lower:
-                    calc_example = ("��� ����������� HTML + JavaScript ��������������� �����������:\n\n"
+                    calc_example = ("Вот простой HTML + JavaScript интерактивный калькулятор:\n\n"
                                     "```html\n"
-                                    "<div class\"calc\">\n"
-                                    "  <input id=\"a\" type=\"number\" placeholder=\"�������� �����\">\n"
+                                    "<div class=\"calc\">\n"
+                                    "  <input id=\"a\" type=\"number\" placeholder=\"Первое число\">\n"
                                     "  <select id=\"op\">\n"
                                     "    <option value=\"+\">+</option>\n"
                                     "    <option value=\"-\">-</option>\n"
                                     "    <option value=\"*\">*</option>\n"
                                     "    <option value=\"/\">/</option>\n"
                                     "  </select>\n"
-                                    "  <input id=\"b\" type=\"number\" placeholder=\"������ �����\">\n"
-                                    "  <button id=\"calc\">��������</button>\n"
+                                    "  <input id=\"b\" type=\"number\" placeholder=\"Второе число\">\n"
+                                    "  <button id=\"calc\">Вычислить</button>\n"
                                     "  <p id=\"result\"></p>\n"
                                     "</div>\n"
                                     "<script>\n"
@@ -575,37 +605,37 @@ class EnhancedAIHandler:
                                     "      case '-': result = a - b; break;\n"
                                     "      case '*': result = a * b; break;\n"
                                     "      case '/':\n"
-                                    "        result = b !== 0 ? a / b : '��������: ������� �� ����';\n"
+                                    "        result = b !== 0 ? a / b : 'Ошибка: деление на ноль';\n"
                                     "        break;\n"
                                     "      default:\n"
-                                    "        result = '����������� ��������';\n"
+                                    "        result = 'Неизвестная операция';\n"
                                     "    }\n"
-                                    "    resultEl.textContent = `���������: ${result}`;\n"
+                                    "    resultEl.textContent = `Результат: ${result}`;\n"
                                     "  });\n"
                                     "</script>\n"
                                     "```\n\n"
-                                    "������ ����������� ���������� � ����, ������� ���������� ������ ��� TS ��� GUI — ������.")
+                                    "Можете улучшить калькулятор добавив стили, валидацию или TS или GUI — дерзайте.")
                 else:
-                    calc_example = ("��� ������� ���������� ����������� �� Python:\n\n"
+                    calc_example = ("Вот простой консольный калькулятор на Python:\n\n"
                                     "```python\n"
                                     "def calculator():\n"
                                     "    operations = {\n"
                                     "        '+': lambda a, b: a + b,\n"
                                     "        '-': lambda a, b: a - b,\n"
                                     "        '*': lambda a, b: a * b,\n"
-                                    "        '/': lambda a, b: a / b if b != 0 else '������: ������� �� ����'\n"
+                                    "        '/': lambda a, b: a / b if b != 0 else 'Ошибка: деление на ноль'\n"
                                     "    }\n\n"
-                                    "    op = input('�������� (+, -, *, /): ').strip()\n"
-                                    "    a = float(input('������ �����: '))\n"
-                                    "    b = float(input('������ �����: '))\n\n"
+                                    "    op = input('Операция (+, -, *, /): ').strip()\n"
+                                    "    a = float(input('Первое число: '))\n"
+                                    "    b = float(input('Второе число: '))\n\n"
                                     "    if op not in operations:\n"
-                                    "        return '����������� ��������'\n\n"
+                                    "        return 'Неизвестная операция'\n\n"
                                     "    result = operations[op](a, b)\n"
-                                    "    return f'���������: {result}'\n\n"
+                                    "    return f'Результат: {result}'\n\n"
                                     "if __name__ == '__main__':\n"
                                     "    print(calculator())\n"
                                     "```\n\n"
-                                    "������ ����������� ������ � ����, ���������� ������ ��� GUI � �����, ��������.")
+                                    "Можете улучшить калькулятор добавив GUI или веб-интерфейс, дерзайте.")
                 return calc_example, False
 
             if "найди ошибку" in message_lower or "find error" in message_lower:
@@ -639,70 +669,96 @@ class EnhancedAIHandler:
                 return explanation, False
 
             # === Обращение к Groq API ===
-            if self.groq_client:
+            if not self.groq_client:
+                logger.warning("Groq клиент не инициализирован")
+                return self._get_fallback_response(message, mode), True
+            
+            # Определяем эмоциональный тон сообщения
+            user_tone = self._detect_message_tone(message_lower)
+            
+            # Получаем имя пользователя из контекста, если доступно
+            user_name = None
+            if user_context and hasattr(user_context, 'user_id') and user_db:
                 try:
-                    prompt = self._build_personalized_prompt(
-                        message,
-                        mode,
-                        skill_level,
-                        preferences,
-                        follow_up=follow_up,
-                        base_question=base_question,
-                        previous_answer=previous_answer,
-                    )
-                    logger.info(f"🔄 Отправка запроса к Groq (mode={mode}, level={skill_level}): {message[:50]}...")
+                    user_data = user_db.get_user(user_context.user_id)
+                    user_name = user_data.get('first_name') or user_data.get('username')
+                except Exception:
+                    pass
+                
+            try:
+                prompt = self._build_personalized_prompt(
+                    message,
+                    mode,
+                    skill_level,
+                    preferences,
+                    follow_up=follow_up,
+                    base_question=base_question,
+                    previous_answer=previous_answer,
+                    user_tone=user_tone,
+                    user_name=user_name,
+                )
+                logger.info(f"🔄 Отправка запроса к Groq (mode={mode}, level={skill_level}): {message[:50]}...")
 
-                    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-                    # Add conversation history if available
-                    if user_context and hasattr(user_context, 'history') and user_context.history:
-                        # Get last 6 messages (3 exchanges) for context
-                        recent_history = user_context.get_recent_context(6)
-                        for msg in recent_history:
-                            if msg['role'] == 'user':
-                                messages.append({"role": "user", "content": msg['content']})
-                            elif msg['role'] == 'assistant':
-                                messages.append({"role": "assistant", "content": msg['content']})
+                # Add conversation history if available
+                if user_context and hasattr(user_context, 'history') and user_context.history:
+                    # Get last 6 messages (3 exchanges) for context
+                    recent_history = user_context.get_recent_context(6)
+                    for msg in recent_history:
+                        if msg.get('role') == 'user':
+                            messages.append({"role": "user", "content": msg.get('content', '')})
+                        elif msg.get('role') == 'assistant':
+                            messages.append({"role": "assistant", "content": msg.get('content', '')})
 
-                    # Add current message
-                    messages.append({"role": "user", "content": prompt})
+                # Add current message
+                messages.append({"role": "user", "content": prompt})
 
-                    response = await self.groq_client.chat.completions.create(
-                        model=GROQ_MODEL,
-                        messages=messages,
-                        temperature=0.3,
-                        max_tokens=1000,
-                        timeout=15
-                    )
+                response = await self.groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=messages,
+                    temperature=0.7,  # Увеличена температура для более естественных и вариативных ответов
+                    max_tokens=1200,  # Увеличено для более полных ответов
+                    timeout=20  # Увеличено время ожидания
+                )
 
-                    if not response or not hasattr(response, "choices") or not response.choices:
-                        logger.warning("⚠️ Пустой ответ от Groq. Используем fallback.")
-                        return self._get_fallback_response(message, mode), True
-
-                    choice = response.choices[0]
-                    content = getattr(choice.message, "content", None) if hasattr(choice, "message") else None
-
-                    if not content:
-                        logger.warning("⚠️ Пустое содержимое ответа. Используем fallback.")
-                        return self._get_fallback_response(message, mode), True
-
-                    ai_response = content.strip()
-                    ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
-                    logger.info("✅ Успешный ответ от Groq")
-                    formatted = self._format_for_telegram(ai_response)
-                    return formatted, False
-
-                except asyncio.TimeoutError:
-                    logger.warning("⏰ Таймаут запроса к Groq")
-                    return "⏰ ИИ долго думает... Попробуйте задать вопрос короче.", True
-                except Exception as e:
-                    logger.error(f"❌ Ошибка Groq: {e}")
+                if not response or not hasattr(response, "choices") or not response.choices:
+                    logger.warning("⚠️ Пустой ответ от Groq. Используем fallback.")
                     return self._get_fallback_response(message, mode), True
 
-            return self._get_fallback_response(message, mode), True
+                choice = response.choices[0]
+                content = getattr(choice.message, "content", None) if hasattr(choice, "message") else None
+
+                if not content:
+                    logger.warning("⚠️ Пустое содержимое ответа. Используем fallback.")
+                    return self._get_fallback_response(message, mode), True
+
+                ai_response = content.strip()
+                if not ai_response:
+                    logger.warning("⚠️ Пустой ответ после обработки. Используем fallback.")
+                    return self._get_fallback_response(message, mode), True
+                    
+                # Добавляем эмоциональную поддержку, если нужно
+                if user_tone and user_tone in self.SUPPORTIVE_REACTIONS:
+                    tone_reaction = random.choice(self.SUPPORTIVE_REACTIONS[user_tone])
+                    # Добавляем реакцию только если её нет в ответе
+                    if tone_reaction.lower() not in ai_response.lower():
+                        ai_response = f"{tone_reaction}\n\n{ai_response}"
+                    
+                ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
+                logger.info("✅ Успешный ответ от Groq")
+                formatted = self._format_for_telegram(ai_response)
+                return formatted, False
+
+            except asyncio.TimeoutError:
+                logger.warning("⏰ Таймаут запроса к Groq")
+                return "⏰ ИИ долго думает... Попробуйте задать вопрос короче.", True
+            except Exception as e:
+                logger.error(f"❌ Ошибка Groq: {e}", exc_info=True)
+                return self._get_fallback_response(message, mode), True
 
         except Exception as e:
-            logger.error(f"🔥 Критическая ошибка: {e}")
+            logger.error(f"🔥 Критическая ошибка: {e}", exc_info=True)
             return self._get_fallback_response(message, mode), True
 
     async def _analyze_code_for_errors(self, message: str) -> str:
@@ -900,12 +956,12 @@ class EnhancedAIHandler:
 
     def _get_fallback_response(self, message: str, mode: str) -> str:
         fallbacks = {
-            "analyze_code": "Не удалось быстро разобрать код. Отправь его ещё раз и уточни, что именно смущает.",
-            "debug_code": "Не получилось воспроизвести проблему. Проверь, хватает ли контекста, и пришли пример повторно.",
-            "explain_concept": "Пока не удалось подобрать объяснение. Сформулируй вопрос иначе или добавь деталей.",
-            "optimize_code": "Сейчас не получилось предложить оптимизацию. Попробуй описать цель подробнее и повтори запрос.",
-            "architecture_advice": "Не успел сформировать архитектурный совет. Дай больше информации о проекте и спроси ещё раз.",
-            "general": "Не удалось получить ответ от модели. Повтори вопрос через несколько секунд — я уже готов снова помочь."
+            "analyze_code": "Сейчас не могу быстро разобрать код. Отправь его ещё раз и уточни, что именно смущает — разберёмся вместе.",
+            "debug_code": "Не получилось сразу найти проблему. Проверь, хватает ли контекста (ошибки, логи), и пришли пример повторно — посмотрю внимательнее.",
+            "explain_concept": "Пока не удалось подобрать объяснение. Сформулируй вопрос иначе или добавь деталей — так будет проще помочь.",
+            "optimize_code": "Сейчас не получилось предложить оптимизацию. Попробуй описать цель подробнее (производительность, читаемость, масштабируемость) и спроси ещё раз.",
+            "architecture_advice": "Не успел сформировать архитектурный совет. Дай больше информации о проекте (размер, требования, стек) и спроси ещё раз — подумаю над решением.",
+            "general": "Что-то пошло не так с ответом. Попробуй переформулировать вопрос или задать его по-другому — я готов помочь!"
         }
         return fallbacks.get(mode, fallbacks["general"])
 
@@ -969,10 +1025,12 @@ class EnhancedAIHandler:
         follow_up: bool = False,
         base_question: Optional[str] = None,
         previous_answer: Optional[str] = None,
+        user_tone: Optional[str] = None,
+        user_name: Optional[str] = None,
     ) -> str:
         """Создает персонализированный промпт на основе уровня навыков и предпочтений"""
 
-        # Базовые описания режимов
+        # Базовые описания режимов с более естественными формулировками
         mode_descriptions = {
             "analyze_code": "Проанализируй этот код",
             "debug_code": "Найди и исправь ошибки в коде",
@@ -982,31 +1040,31 @@ class EnhancedAIHandler:
             "general": "Ответь на вопрос по программированию"
         }
 
-        # Персонализация на основе уровня навыков
+        # Персонализация на основе уровня навыков с более живыми формулировками
         level_adjustments = {
             "beginner": {
-                "analyze_code": "Проанализируй этот код простыми словами, объясни каждую строку",
-                "debug_code": "Найди ошибки и объясни, почему они возникли и как их исправить",
-                "explain_concept": "Объясни концепцию очень простыми словами с базовыми примерами",
-                "optimize_code": "Покажи как улучшить код и объясни почему эти изменения лучше",
-                "architecture_advice": "Дай простые советы по структуре кода для новичков",
-                "general": "Ответь простыми словами, добавь примеры для новичков"
+                "analyze_code": "Проанализируй этот код простыми словами, как будто объясняешь коллеге-новичку. Объясни каждую важную строку.",
+                "debug_code": "Найди ошибки и объясни, почему они возникли и как их исправить. Будь терпеливым и понятным.",
+                "explain_concept": "Объясни концепцию очень простыми словами с базовыми примерами. Представь, что объясняешь другу, который только начинает.",
+                "optimize_code": "Покажи как улучшить код и объясни почему эти изменения лучше. Используй простые аналогии.",
+                "architecture_advice": "Дай простые советы по структуре кода для новичков. Не перегружай терминами.",
+                "general": "Ответь простыми словами, добавь примеры для новичков. Будь терпеливым и понятным."
             },
             "intermediate": {
-                "analyze_code": "Проанализируй код, укажи на паттерны и потенциальные улучшения",
-                "debug_code": "Найди ошибки, предложи несколько способов исправления",
-                "explain_concept": "Объясни концепцию с практическими примерами и случаями использования",
-                "optimize_code": "Оптимизируй код, покажи альтернативные подходы",
-                "architecture_advice": "Дай советы по архитектуре с учетом масштабируемости",
-                "general": "Дай подробный ответ с примерами и лучшими практиками"
+                "analyze_code": "Проанализируй код как опытный коллега: укажи на паттерны, потенциальные улучшения и лучшие практики.",
+                "debug_code": "Найди ошибки и предложи несколько способов исправления с объяснением плюсов и минусов каждого.",
+                "explain_concept": "Объясни концепцию с практическими примерами и случаями использования. Покажи, где это применяется в реальных проектах.",
+                "optimize_code": "Оптимизируй код, покажи альтернативные подходы и объясни trade-offs.",
+                "architecture_advice": "Дай советы по архитектуре с учетом масштабируемости и поддерживаемости.",
+                "general": "Дай подробный ответ с примерами и лучшими практиками. Покажи несколько подходов, если это уместно."
             },
             "advanced": {
-                "analyze_code": "Глубокий анализ: архитектура, производительность, безопасность",
-                "debug_code": "Найди ошибки, проанализируй root cause, предложи системные решения",
-                "explain_concept": "Детальное объяснение с продвинутыми паттернами и edge cases",
-                "optimize_code": "Продвинутая оптимизация: алгоритмы, память, производительность",
-                "architecture_advice": "Экспертные советы по enterprise архитектуре и паттернам",
-                "general": "Экспертный ответ с глубоким техническим анализом"
+                "analyze_code": "Глубокий анализ: архитектура, производительность, безопасность, edge cases. Будь критичным и конструктивным.",
+                "debug_code": "Найди ошибки, проанализируй root cause, предложи системные решения и профилактику.",
+                "explain_concept": "Детальное объяснение с продвинутыми паттернами, edge cases и альтернативными подходами.",
+                "optimize_code": "Продвинутая оптимизация: алгоритмы, память, производительность, trade-offs.",
+                "architecture_advice": "Экспертные советы по enterprise архитектуре, паттернам и anti-patterns.",
+                "general": "Экспертный ответ с глубоким техническим анализом. Можешь быть более кратким и техничным."
             }
         }
 
@@ -1014,36 +1072,53 @@ class EnhancedAIHandler:
         task = level_adjustments.get(skill_level, {}).get(mode,
                                                           mode_descriptions.get(mode, mode_descriptions["general"]))
 
+        # Добавляем эмоциональный контекст
+        tone_context = ""
+        if user_tone == "frustrated":
+            tone_context = " Пользователь расстроен и раздражён — будь особенно терпеливым и поддерживающим."
+        elif user_tone == "confused":
+            tone_context = " Пользователь запутался — объясняй максимально просто и пошагово."
+        elif user_tone == "excited":
+            tone_context = " Пользователь вдохновлён — поддерживай энтузиазм и предлагай интересные идеи."
+        elif user_tone == "negative":
+            tone_context = " Пользователь столкнулся с проблемой — будь поддерживающим и конструктивным."
+
         # Добавляем предпочтения по языкам программирования
         preferred_language = preferences.get('language', '')
         if preferred_language:
-            task += f". Если возможно, используй примеры на {preferred_language}"
+            task += f" Если возможно, используй примеры на {preferred_language}."
 
         # Добавляем стиль объяснения
         if follow_up:
-            task += ". User already received a basic answer, so add new depth: advanced examples, best practices, common mistakes, and references for self-study"
+            task += " Пользователь уже получил базовый ответ, так что добавь глубины: продвинутые примеры, лучшие практики, частые ошибки и ресурсы для самостоятельного изучения."
 
         explanation_style = preferences.get('explanation_style', '')
         if explanation_style == 'detailed':
-            task += ". Дай максимально подробное объяснение"
+            task += " Дай максимально подробное объяснение с примерами."
         elif explanation_style == 'concise':
-            task += ". Будь кратким и по делу"
+            task += " Будь кратким и по делу, без лишней воды."
 
-        task += ". Provide actionable next steps, add links to docs, format code in ```language``` and do not repeat previous explanations word for word"
-        task += ". Avoid markdown tables, favor short paragraphs or bullet lists, keep the answer within 1200 characters unless code requires more space"
+        # Добавляем имя пользователя для более личного общения
+        name_context = ""
+        if user_name:
+            name_context = f" Пользователя зовут {user_name} — используй имя естественно, но не слишком часто."
+
+        task += tone_context + name_context
+        task += " Предлагай конкретные следующие шаги, добавляй ссылки на документацию, форматируй код в ```язык``` и не повторяй предыдущие объяснения слово в слово."
+        task += " Избегай markdown таблиц, предпочитай короткие абзацы или списки, держи ответ в пределах 1200 символов, если только код не требует больше места."
 
         context_sections: List[str] = []
         if follow_up:
-            context_sections.append("The user already received a basic answer earlier. Provide a deeper continuation: add advanced examples, highlight best practices, warn about common pitfalls, and suggest resources to study next.")
+            context_sections.append("Пользователь уже получил базовый ответ ранее. Предоставь более глубокое продолжение: добавь продвинутые примеры, выдели лучшие практики, предупреди о частых ошибках и предложи ресурсы для дальнейшего изучения.")
         if base_question:
-            context_sections.append(f"Original question from the user: {base_question}")
+            context_sections.append(f"Исходный вопрос пользователя: {base_question}")
         if previous_answer:
             trimmed_answer = previous_answer.strip()
             if len(trimmed_answer) > 800:
                 trimmed_answer = trimmed_answer[:800] + '…'
-            context_sections.append(f"Previous assistant answer (reference only, do not repeat): {trimmed_answer}")
+            context_sections.append(f"Предыдущий ответ ассистента (только для справки, не повторяй): {trimmed_answer}")
 
-        context_sections.append(f"Current user message: {message}")
+        context_sections.append(f"Текущее сообщение пользователя: {message}")
 
         return f"{task}:\n\n" + "\n\n".join(context_sections) + "\n\nПредложи новые идеи, чтобы пользователь продвинулся дальше."
 

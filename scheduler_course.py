@@ -21,15 +21,17 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 try:
-    from config import TELEGRAM_GROUP_USERNAME  # type: ignore
+    from config import TELEGRAM_GROUP_USERNAME, TELEGRAM_TOKEN  # type: ignore
 except Exception:
     raw_group_username = os.getenv('TELEGRAM_GROUP_USERNAME', '@learncoding_team') or '@learncoding_team'
     raw_group_username = raw_group_username.strip() or '@learncoding_team'
     if not raw_group_username.startswith('@'):
         raw_group_username = f'@{raw_group_username}'
     TELEGRAM_GROUP_USERNAME = raw_group_username
-# Конфигурация
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN')
+
+# Конфигурация - используем TELEGRAM_TOKEN из config, fallback на BOT_TOKEN для совместимости
+BOT_TOKEN = TELEGRAM_TOKEN if 'TELEGRAM_TOKEN' in locals() else (os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN'))
 CHAT_ID = os.getenv('CHAT_ID')
 PERIOD_DAYS = int(os.getenv('PERIOD_DAYS', '4'))
 TZ = os.getenv('TZ', 'Europe/Minsk')

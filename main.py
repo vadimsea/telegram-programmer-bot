@@ -392,9 +392,12 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(settings_text, reply_markup=get_main_keyboard())
 
 
-# Обработка текста
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if not update or not update.message:
+            logger.warning("Получено обновление без сообщения")
+            return
+            
         user_id = update.message.from_user.id
         user_context = get_user_context(user_id)
 
@@ -601,16 +604,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
     except Exception as e:
-        logger.error(f"Критическая ошибка в handle_message для пользователя {user_id}: {e}")
+        logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)
         try:
-            await update.message.reply_text(
-                "❌ Произошла неожиданная ошибка. Наша команда уведомлена.\n"
-                "Попробуйте:\n"
-                "• Переформулировать вопрос\n"
-                "• Разбить сложный запрос на части\n"
-                "• Повторить через несколько минут",
-                reply_markup=get_main_keyboard()
-            )
+            if update and update.message:
+                await update.message.reply_text(
+                    "❌ Произошла неожиданная ошибка. Наша команда уведомлена.\n"
+                    "Попробуйте:\n"
+                    "• Переформулировать вопрос\n"
+                    "• Разбить сложный запрос на части\n"
+                    "• Повторить через несколько минут",
+                    reply_markup=get_main_keyboard()
+                )
         except Exception as final_error:
             logger.error(f"Не удалось отправить сообщение об ошибке: {final_error}")
 
@@ -676,9 +680,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Ваша статистика:\n\n"
         f"❓ Всего вопросов: {stats['total_questions']}\n"
         f"🎯 Уровень: {user_context.skill_level}\n"
-        f"⭐ Средняя оценка: {sum(user_context.feedback_scores) / len(user_context.feedback_scores):.1f}/5\n" if user_context.feedback_scores else ""
-                                                                                                                                                  f"📅 С нами с: {stats['member_since'][:10]}\n\n"
     )
+    
+    if user_context.feedback_scores:
+        avg_score = sum(user_context.feedback_scores) / len(user_context.feedback_scores)
+        stats_text += f"⭐ Средняя оценка: {avg_score:.1f}/5\n"
+    
+    stats_text += f"📅 С нами с: {stats['member_since'][:10]}\n\n"
 
     if stats['favorite_topics']:
         stats_text += "🔥 Ваши темы:\n"
