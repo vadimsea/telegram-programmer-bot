@@ -21,7 +21,14 @@ from database import user_db
 from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
 from scheduler_course import run_forever
-from course_handler import setup_course_handlers, send_welcome_to_group
+from course_handler import (
+    setup_course_handlers,
+    send_welcome_to_group,
+    handle_course_code_message,
+    handle_course_mentor_message,
+)
+from user_progress import progress_manager as course_progress_manager
+from telegram.constants import ChatType
 from permissions import is_admin_identity
 
 # Логирование
@@ -397,7 +404,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update or not update.message:
             logger.warning("Получено обновление без сообщения")
             return
-            
+
+        if (
+            update.effective_chat
+            and update.effective_chat.type == ChatType.PRIVATE
+            and update.message
+            and course_progress_manager.is_expecting_mentor(update.effective_user.id)
+        ):
+            await handle_course_mentor_message(update, context)
+            return
+
+        if (
+            update.effective_chat
+            and update.effective_chat.type == ChatType.PRIVATE
+            and update.message.text
+            and course_progress_manager.is_expecting_code(update.effective_user.id)
+        ):
+            await handle_course_code_message(update, context)
+            return
+
         user_id = update.message.from_user.id
         user_context = get_user_context(user_id)
 
@@ -812,10 +837,8 @@ async def bot_runner():
         application.add_handler(CommandHandler("settings", settings_command))  # Added settings command
         application.add_handler(CommandHandler("admin", admin_command))
         application.add_handler(CallbackQueryHandler(button_callback, pattern=r"^(admin_|feedback_)"))
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-        # Добавляем обработчики курса
         setup_course_handlers(application)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
         # Обработчик ошибок
         application.add_error_handler(error_handler)

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import random
 import re
-from typing import List, Optional, Set, Tuple
+from typing import List, Literal, Optional, Set, Tuple, TypedDict
 from groq import AsyncGroq
 from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
 
@@ -18,6 +18,52 @@ except ImportError:
     user_db = None
 
 logger = logging.getLogger(__name__)
+
+
+class SubmissionReview(TypedDict):
+    """Ответ проверки кода урока: статус для логики + текст пользователю."""
+
+    status: Literal["OK", "ERROR"]
+    feedback: str
+
+
+CODE_REVIEW_SYSTEM_PROMPT = (
+    "Ты ментор по фронтенду (HTML/CSS/JS). Проверяешь работу новичка.\n"
+    "Смотри ТОЛЬКО на пункты переданного чеклиста — не добавляй своих критериев и не требуй идеала.\n"
+    "Тон: тёплый, по делу, без академизма и без длинных лекций. Не обесценивай человека.\n"
+    "Найди максимум 1–2 замечания по чеклисту. Если пункты по смыслу выполнены — похвали конкретно (за что именно).\n"
+    "Не выдавай готовое решение целиком и не разбирай то, чего нет в чеклисте.\n\n"
+    "Формат ответа (строго):\n"
+    "Строка 1 — ровно OK или ERROR (латиница, заглавные).\n"
+    "Со строки 2 — короткий текст для ученика (не больше ~350 символов после строки 1):\n"
+    "- при OK: одна строка похвалы; при желании вторая — одно лёгкое улучшение строго по чеклисту, если оно уместно;\n"
+    "- при ERROR: что не так относительно чеклиста и одна конкретная подсказка, что сделать (без простыни).\n"
+    "Без markdown-заголовков (#), без теории «как устроен браузер»."
+)
+
+
+def _parse_submission_review(raw: str) -> Tuple[str, str]:
+    """Первая строка — OK|ERROR, остальное — feedback для пользователя."""
+    text = (raw or "").strip()
+    if not text:
+        return "ERROR", "Пустой ответ проверки. Попробуй ещё раз или нажми «✅ Я сделал»."
+    if "\n" in text:
+        first, rest = text.split("\n", 1)
+    else:
+        first, rest = text, ""
+    first_u = first.strip().upper()
+    rest = rest.strip()
+    if first_u == "OK" or first_u.startswith("OK ") or first_u.startswith("OK."):
+        return "OK", rest or "По чеклисту всё сходится — красавчик, идём дальше."
+    if first_u == "ERROR" or first_u.startswith("ERROR ") or first_u.startswith("ERROR."):
+        return "ERROR", rest or "Глянь чеклист под заданием и поправь один момент — потом снова кинь код."
+    # Модель забыла формат — не гадаем жёстко про зачёт
+    if "ERROR" in first_u[:12]:
+        return "ERROR", text
+    token0 = first_u.split()[0] if first_u.split() else ""
+    if token0 == "OK":
+        return "OK", rest or text
+    return "ERROR", text
 
 
 class EnhancedAIHandler:
@@ -1118,6 +1164,54 @@ class EnhancedAIHandler:
         context_sections.append(f"Текущее сообщение пользователя: {message}")
 
         return f"{task}:\n\n" + "\n\n".join(context_sections) + "\n\nВажно: Дай ответ, которым бы гордился senior-разработчик. Будь конкретным, практичным и полезным. Предложи новые идеи, чтобы пользователь продвинулся дальше."
+
+    async def review_submission(
+        self,
+        lesson_id: str,
+        task_summary: str,
+        checklist: List[str],
+        code: str,
+    ) -> SubmissionReview:
+        """
+        Проверка кода по чеклисту урока (ментор, не валидатор).
+        Возвращает status OK|ERROR для логики бота и feedback — текст в чат пользователю.
+        """
+        if not self.groq_client:
+            return {
+                "status": "ERROR",
+                "feedback": (
+                    "Проверка временно недоступна. Если уверен в задании — нажми «✅ Я сделал»; "
+                    "иначе попробуй прислать код чуть позже."
+                ),
+            }
+
+        checklist_text = "\n".join(f"- {c}" for c in checklist) if checklist else "(чеклист пуст — ориентируйся на формулировку задания)"
+        user_msg = (
+            f"Урок: {lesson_id}\n"
+            f"Задание (кратко): {task_summary}\n\n"
+            f"Чеклист — проверяй только это:\n{checklist_text}\n\n"
+            f"Код ученика:\n{code[:3500]}"
+        )
+        try:
+            response = await self.groq_client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": CODE_REVIEW_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.35,
+                max_tokens=280,
+                timeout=25,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            status, feedback = _parse_submission_review(content)
+            return {"status": status, "feedback": feedback}
+        except Exception as exc:
+            logger.error("review_submission: %s", exc, exc_info=True)
+            return {
+                "status": "ERROR",
+                "feedback": "Сервис проверки перегружен. Попробуй через минуту или нажми «✅ Я сделал».",
+            }
 
 
 # Синглтон

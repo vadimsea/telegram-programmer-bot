@@ -1,566 +1,710 @@
 """
-Модуль для обработки команд обучения в группе
+Курс: уроки в ЛС, короткий анонс в группу, прогресс в user_progress.
+Inline-кнопки под уроком не удаляются — новые шаги идут новыми сообщениями.
 """
 
-import asyncio
-import json
+import html
 import logging
 import os
+import re
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
-from telegram.error import TelegramError
+from telegram.constants import ChatType
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from telegram.error import TelegramError, Forbidden
 
 from permissions import is_admin_identity
-# Загружаем переменные окружения
+from curriculum import (
+    LESSON_ORDER,
+    get_lesson,
+    lesson_id_for_scheduler_index,
+    total_lessons,
+)
+from user_progress import progress_manager
+
 load_dotenv()
 
 try:
     from config import TELEGRAM_GROUP_USERNAME, TELEGRAM_TOKEN  # type: ignore
 except Exception:
-    raw_group_username = os.getenv('TELEGRAM_GROUP_USERNAME', '@learncoding_team') or '@learncoding_team'
-    raw_group_username = raw_group_username.strip() or '@learncoding_team'
-    if not raw_group_username.startswith('@'):
-        raw_group_username = f'@{raw_group_username}'
+    raw_group_username = os.getenv("TELEGRAM_GROUP_USERNAME", "@learncoding_team") or "@learncoding_team"
+    raw_group_username = raw_group_username.strip() or "@learncoding_team"
+    if not raw_group_username.startswith("@"):
+        raw_group_username = f"@{raw_group_username}"
     TELEGRAM_GROUP_USERNAME = raw_group_username
-    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN')
+    TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
 
 logger = logging.getLogger(__name__)
 
-# Конфигурация - используем TELEGRAM_TOKEN из config, fallback на BOT_TOKEN для совместимости
-BOT_TOKEN = TELEGRAM_TOKEN if 'TELEGRAM_TOKEN' in locals() else (os.getenv('TELEGRAM_TOKEN') or os.getenv('BOT_TOKEN'))
-CHAT_ID = os.getenv('CHAT_ID')
-STATE_FILE = os.getenv('STATE_FILE', 'state.json')
+BOT_TOKEN = TELEGRAM_TOKEN if "TELEGRAM_TOKEN" in locals() else (os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN"))
+CHAT_ID = os.getenv("CHAT_ID")
 
-# Данные уроков (импортируем из scheduler_course)
-from scheduler_course import HTML_CSS_LESSONS, JAVASCRIPT_LESSONS
-from user_progress import progress_manager
+MENTOR_TG_URL = "https://t.me/vadzimbelarus"
+MENTOR_SITE_URL = "https://vadzim.by/"
+
+
+def get_mentor_forward_chat_id() -> Optional[int]:
+    """Куда пересылать запросы «на ментора» (env > создатель > первый админ)."""
+    raw = os.getenv("MENTOR_FORWARD_CHAT_ID", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from config import CREATOR_USER_ID, ADMIN_USER_IDS  # type: ignore
+
+        if CREATOR_USER_ID is not None:
+            return int(CREATOR_USER_ID)
+        if ADMIN_USER_IDS:
+            return int(ADMIN_USER_IDS[0])
+    except Exception:
+        pass
+    return None
+
+
+def build_lesson_keyboard(lesson_id: str, include_next: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton("✅ Я сделал", callback_data=f"hw_done_{lesson_id}"),
+            InlineKeyboardButton("💬 Отправить код", callback_data=f"codehelp_{lesson_id}"),
+        ],
+        [InlineKeyboardButton("💡 Подсказка", callback_data=f"hint_{lesson_id}")],
+        [InlineKeyboardButton("⚡ Быстрый тест", callback_data=f"theoryquiz_{lesson_id}")],
+        [
+            InlineKeyboardButton("👤 Ментор", callback_data=f"mentor_{lesson_id}"),
+            InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
+        ],
+        [
+            InlineKeyboardButton("📚 Группа курса", url=f"https://t.me/{TELEGRAM_GROUP_USERNAME.lstrip('@')}"),
+        ],
+    ]
+    if include_next:
+        rows.insert(0, [InlineKeyboardButton("📖 Следующий урок", callback_data="cnext")])
+    return InlineKeyboardMarkup(rows)
+
+
+_lesson_keyboard = build_lesson_keyboard
+
+
+def _quiz_callback_data(lesson_id: str, q_idx: int, choice: int) -> str:
+    return f"quiz_{lesson_id}*{q_idx}*{choice}"
+
+
+def _quiz_keyboard(lesson_id: str, q_idx: int) -> Optional[InlineKeyboardMarkup]:
+    try:
+        lesson = get_lesson(lesson_id)
+    except KeyError:
+        return None
+    quiz_list = lesson.get("quiz") or []
+    if q_idx < 0 or q_idx >= len(quiz_list):
+        return None
+    q = quiz_list[q_idx]
+    opts = q.get("options") or []
+    rows = []
+    for i, label in enumerate(opts):
+        cb = _quiz_callback_data(lesson_id, q_idx, i)
+        if len(cb) > 64:
+            logger.error("quiz callback too long: %s", cb)
+            continue
+        rows.append([InlineKeyboardButton(str(label), callback_data=cb)])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+async def send_micro_quiz(bot, user_id: int, lesson_id: str, question_idx: int = 0) -> bool:
+    """
+    Одно сообщение с одним вопросом и 2–3 кнопками. Без хранения состояния.
+    """
+    try:
+        lesson = get_lesson(lesson_id)
+    except KeyError:
+        lesson_id = LESSON_ORDER[0]
+        lesson = get_lesson(lesson_id)
+    quiz_list = lesson.get("quiz") or []
+    if not quiz_list or question_idx >= len(quiz_list):
+        try:
+            await bot.send_message(
+                chat_id=user_id,
+                text="Для этого блока тест ещё не настроен — переходи к практике в уроке.",
+            )
+        except (TelegramError, Forbidden):
+            return False
+        return False
+    q = quiz_list[question_idx]
+    kb = _quiz_keyboard(lesson_id, question_idx)
+    if not kb:
+        return False
+    text = (
+        f"⚡ <b>Быстрый тест</b> ({question_idx + 1}/{len(quiz_list)})\n"
+        f"<code>{lesson_id}</code>\n\n"
+        f"❓ {q['q']}"
+    )
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=text,
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        return True
+    except Forbidden:
+        logger.warning("send_micro_quiz: user %s has not started bot", user_id)
+        return False
+    except TelegramError as e:
+        logger.warning("send_micro_quiz: %s", e)
+        return False
+
 
 class CourseHandler:
-    """Обработчик команд курса"""
-    
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
-        self.current_index = self.load_index()
-        
-    def load_index(self) -> int:
-        """Загрузить текущий индекс урока"""
-        try:
-            if os.path.exists(STATE_FILE):
-                with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    return data.get('lesson_index', 0)
-        except Exception as e:
-            logger.error(f"Ошибка загрузки индекса урока: {e}")
-        return 0
-    
-    def save_index(self, index: int):
-        """Сохранить текущий индекс урока"""
-        try:
-            data = {'lesson_index': index, 'last_updated': datetime.now().isoformat()}
-            with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Ошибка сохранения индекса урока: {e}")
-    
-    def make_lesson(self, idx: int) -> Dict[str, str]:
-        """Создать урок по индексу (циклически)"""
-        # Определяем тип урока (HTML/CSS или JavaScript)
-        lesson_type = "HTML/CSS" if (idx // len(HTML_CSS_LESSONS)) % 2 == 0 else "JavaScript"
-        
-        if lesson_type == "HTML/CSS":
-            lesson_data = HTML_CSS_LESSONS[idx % len(HTML_CSS_LESSONS)]
-            lesson_num = (idx % len(HTML_CSS_LESSONS)) + 1
-        else:
-            lesson_data = JAVASCRIPT_LESSONS[idx % len(JAVASCRIPT_LESSONS)]
-            lesson_num = (idx % len(JAVASCRIPT_LESSONS)) + 1
-        
-        return {
-            'title': f"Урок {idx + 1}. {lesson_data['title']}",
-            'theory': lesson_data['theory'],
-            'homework': lesson_data['homework'],
-            'type': lesson_type
-        }
-    
-    async def send_lesson(self, chat_id: str, lesson_index: int, user_id: int = None) -> bool:
-        """Отправить урок пользователю"""
+
+    def _lesson_message(self, lesson_id: str) -> str:
+        L = get_lesson(lesson_id)
+        badge = L.get("progress_badge")
+        opening = L.get("opening")
+        head = f"📌 <b>{L['title']}</b> <code>({lesson_id})</code>"
+        if badge:
+            head = f"📍 <b>{badge}</b>\n{head}"
+        blocks = [head]
+        if opening:
+            blocks.append(opening)
+        blocks.append(L["hook"])
+        body = (
+            "\n\n".join(blocks)
+            + f"\n\n📖 <b>Теория</b>\n{L['theory']}\n\n"
+            f"⚡ <b>Нюанс</b>\n{L['nuance']}\n\n"
+            f"🛠 <b>Задание</b>\n{L['task']}\n\n"
+            "Снизу кнопки: тест ⚡, потом практика; ИИ проверит код; ментор — если совсем стоп."
+        )
+        if lesson_id == LESSON_ORDER[-1]:
+            body += (
+                "\n\n🌐 Этот урок плотнее остальных — если захочешь системности, загляни на "
+                f'<a href="{html.escape(MENTOR_SITE_URL)}">vadzim.by</a> — там база автора курса.'
+            )
+        return body
+
+    async def send_lesson_dm(self, user_id: int, lesson_id: str) -> bool:
         if not self.bot:
-            logger.error("Бот не инициализирован! Проверьте BOT_TOKEN")
             return False
-        
-        if not chat_id:
-            logger.error("Chat ID не указан")
-            return False
-        
         try:
-            lesson = self.make_lesson(lesson_index)
-            
-            if not lesson:
-                logger.error(f"Не удалось создать урок с индексом {lesson_index}")
-                return False
-            
-            # Формируем сообщение
-            message_text = (
-                f"📚 <b>{lesson['title']}</b>\n\n"
-                f"💡 <b>Теория:</b>\n{lesson['theory']}\n\n"
-                f"📝 <b>Домашнее задание:</b>\n{lesson['homework']}\n\n"
-                f"✅ <b>Сдаём ДЗ:</b> ответом на это сообщение в этой же группе\n\n"
-                f"🎯 <b>Уровень:</b> {lesson['type']}\n"
-                f"📅 <b>Дата:</b> {datetime.now().strftime('%d.%m.%Y')}"
+            text = self._lesson_message(lesson_id)
+            await self.bot.send_message(
+                chat_id=user_id,
+                text=text,
+                reply_markup=build_lesson_keyboard(lesson_id),
+                parse_mode="HTML",
             )
-            
-            # Создаем клавиатуру
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "👨‍💻 Связаться с ментором — бесплатно",
-                    url="https://t.me/vadzim_belarus"
-                )],
-                [InlineKeyboardButton(
-                    "📚 Все уроки курса",
-                    url="https://t.me/learncoding_team"
-                )],
-                [InlineKeyboardButton(
-                    "🌐 Сайт создателя",
-                    url="https://vadzim.by"
-                )],
-                [InlineKeyboardButton(
-                    "📖 Следующий урок",
-                    callback_data=f"next_lesson_{lesson_index + 1}"
-                )]
-            ])
-            
-            # Отправляем сообщение
-            message = await self.bot.send_message(
-                chat_id=chat_id,
-                text=message_text,
-                reply_markup=keyboard,
-                parse_mode='HTML'
-            )
-            
-            # Пытаемся закрепить сообщение
-            try:
-                await self.bot.pin_chat_message(chat_id=chat_id, message_id=message.message_id)
-                logger.info(f"Сообщение закреплено в чате {chat_id}")
-            except TelegramError as e:
-                logger.warning(f"Не удалось закрепить сообщение: {e}")
-            
-            # Сохраняем индекс
-            self.save_index(lesson_index + 1)
-            
-            logger.info(f"Урок {lesson_index + 1} отправлен в чат {chat_id}")
             return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки урока: {e}")
+        except Forbidden:
+            logger.warning("User %s has not started the bot", user_id)
             return False
-    
+        except TelegramError as e:
+            logger.error("send_lesson_dm: %s", e)
+            return False
+
+    async def announce_group(self, display_name: str, lesson_id: str, kind: str) -> None:
+        if not self.bot or not CHAT_ID:
+            return
+        L = get_lesson(lesson_id)
+        safe = html.escape(display_name or "Участник")
+        if kind == "opened":
+            text = (
+                f"🔥 {safe} забрал урок в личку: <b>{html.escape(L['title'])}</b>.\n"
+                f"Кто ещё в деле — жми «Начать обучение» выше."
+            )
+        elif kind == "done":
+            text = (
+                f"✅ {safe} закрыл(а) <b>{html.escape(L['title'])}</b> — красота.\n"
+                f"Следующий урок уже жмёт в боте."
+            )
+        else:
+            text = f"{safe} двигается по курсу: {html.escape(L['title'])} ⚡"
+        try:
+            await self.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+        except TelegramError as e:
+            logger.warning("announce_group: %s", e)
+
     async def send_welcome_message(self, chat_id: str) -> bool:
-        """Отправить приветственное сообщение с кнопкой"""
         if not self.bot:
-            logger.error("Бот не инициализирован! Проверьте BOT_TOKEN")
             return False
-        
         try:
             welcome_text = (
-                "🎉 <b>Добро пожаловать в курс программирования!</b>\n\n"
-                "👋 <b>Привет!</b> Я ваш персональный помощник в изучении веб-разработки.\n\n"
-                "<b>📚 Что вас ждет:</b>\n"
-                "• HTML/CSS основы\n"
-                "• JavaScript программирование\n"
-                "• Практические задания\n"
-                "• Индивидуальный прогресс\n\n"
-                "<b>🚀 Как начать:</b>\n"
-                "1. Нажмите кнопку \"Начать обучение бесплатно\"\n"
-                "2. Получите свой первый урок\n"
-                "3. Изучайте в своем темпе!\n\n"
-                "<b>💡 Команды:</b>\n"
-                "/progress - ваш прогресс\n"
-                "/next - следующий урок\n"
-                "/reset - начать заново\n\n"
-                "<b>🎯 Особенности системы:</b>\n"
-                "• Каждый получает уроки по своему прогрессу\n"
-                "• Сотни людей могут учиться одновременно\n"
-                "• Персональная статистика для каждого\n"
-                "• Защита от спама для стабильной работы\n\n"
-                "<b>👨‍💻 Нужна помощь?</b>\n"
-                "Свяжитесь с ментором Вадимом - он всегда поможет!\n\n"
-                "<b>Начнем обучение?</b>"
+                "🎉 <b>Курс по фронтенду</b>\n\n"
+                "Уроки приходят <b>в личку боту</b> — нажми кнопку ниже и открой диалог с ботом, если ещё не открывал.\n\n"
+                "📊 /progress — прогресс (в группе или в ЛС)\n"
+                "📖 /next — следующий урок (когда предыдущий закрыт)\n\n"
+                "<b>Начнём?</b>"
             )
-            
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "🎓 Начать обучение бесплатно",
-                    callback_data="start_course"
-                )],
-                [InlineKeyboardButton(
-                    "👨‍💻 Связаться с ментором",
-                    url="https://t.me/vadzim_belarus"
-                )],
-                [InlineKeyboardButton(
-                    "🌐 Сайт создателя",
-                    url="https://vadzim.by"
-                )]
-            ])
-            
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("🎓 Начать обучение", callback_data="start_course")],
+                    [
+                        InlineKeyboardButton("👤 Написать ментору", url=MENTOR_TG_URL),
+                        InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
+                    ],
+                ]
+            )
             message = await self.bot.send_message(
                 chat_id=chat_id,
                 text=welcome_text,
                 reply_markup=keyboard,
-                parse_mode='HTML'
+                parse_mode="HTML",
             )
-            
-            # Пытаемся закрепить приветственное сообщение
             try:
                 await self.bot.pin_chat_message(chat_id=chat_id, message_id=message.message_id)
-                logger.info(f"Приветственное сообщение закреплено в чате {chat_id}")
-            except TelegramError as e:
-                logger.warning(f"Не удалось закрепить приветственное сообщение: {e}")
-            
-            logger.info(f"Приветственное сообщение отправлено в чат {chat_id}")
+            except TelegramError:
+                pass
             return True
-            
         except Exception as e:
-            logger.error(f"Ошибка отправки приветственного сообщения: {e}")
+            logger.error("send_welcome_message: %s", e)
             return False
 
-# Глобальный экземпляр обработчика
+
 course_handler = CourseHandler()
 
-async def course_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /course"""
-    try:
-        chat_id = str(update.effective_chat.id)
-        
-        # Проверяем, что команда отправлена в нужной группе
-        if chat_id != CHAT_ID:
-            await update.message.reply_text(
-                f"👋 Привет! Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
+
+def _display_name(user) -> str:
+    if user.first_name:
+        return user.first_name
+    if user.username:
+        return f"@{user.username}"
+    return "Участник"
+
+
+async def _open_lesson_for_user(user_id: int, display_name: str, lesson_id: str) -> tuple[bool, str]:
+    progress_manager.set_active_lesson(user_id, lesson_id)
+    ok = await course_handler.send_lesson_dm(user_id, lesson_id)
+    if not ok:
+        return False, "Сначала открой диалог с ботом: напиши ему /start в личку, потом снова нажми кнопку в группе."
+    await course_handler.announce_group(display_name, lesson_id, "opened")
+    return True, ""
+
+
+async def deliver_next_lesson(user_id: int, display_name: str) -> tuple[bool, str]:
+    total = total_lessons()
+    if not progress_manager.can_open_next_lesson(user_id, total):
+        active = progress_manager.get_active_lesson_id(user_id)
+        if active:
+            return False, "Сначала закрой текущий урок: «✅ Я сделал» или пришли код на проверку."
+        return False, "Ты уже прошёл все уроки этого блока 🎉"
+    cur = progress_manager.get_cursor(user_id)
+    lesson_id = LESSON_ORDER[cur]
+    ok, err = await _open_lesson_for_user(user_id, display_name, lesson_id)
+    return ok, err
+
+
+async def _finalize_lesson(user_id: int, display_name: str, lesson_id: str) -> None:
+    progress_manager.complete_lesson(user_id, lesson_id)
+    await course_handler.announce_group(display_name, lesson_id, "done")
+    if course_handler.bot:
+        try:
+            win = get_lesson(lesson_id).get("win_message", "").strip()
+            if win:
+                await course_handler.bot.send_message(
+                    chat_id=user_id,
+                    text=win,
+                    parse_mode="HTML",
+                )
+        except KeyError:
+            pass
+        done_n = len(progress_manager.get_user_progress(user_id).get("completed_lesson_ids") or [])
+        if done_n == 3:
+            await course_handler.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🔥 Три урока позади — отличный темп.\n"
+                    f'Если хочешь смотреть, кто стоит за курсом: <a href="{html.escape(MENTOR_SITE_URL)}">vadzim.by</a> — '
+                    "там материалы и контакты без лишнего шума."
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
-            return
-        
-        # Отправляем приветственное сообщение
-        success = await course_handler.send_welcome_message(chat_id)
-        
-        if success:
-            await update.message.reply_text(
-                "✅ Приветственное сообщение отправлено! Проверьте закрепленные сообщения."
+        if done_n == 5:
+            await course_handler.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    "🎯 Уже пять уроков — ты в потоке.\n"
+                    "На сайте ментора иногда появляются доп. форматы и апдейты — "
+                    f'<a href="{html.escape(MENTOR_SITE_URL)}">загляни, когда будет минутка</a>.'
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        total = total_lessons()
+        if progress_manager.can_open_next_lesson(user_id, total):
+            await course_handler.bot.send_message(
+                chat_id=user_id,
+                text="🎉 Урок засчитан. Готов к следующему?",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📖 Следующий урок", callback_data="cnext")]]),
+                parse_mode="HTML",
             )
         else:
-            await update.message.reply_text(
-                "❌ Произошла ошибка при отправке приветственного сообщения."
+            await course_handler.bot.send_message(
+                chat_id=user_id,
+                text="🏁 Этот блок завершён. Скоро добавим новые уроки — следи за группой.",
+                parse_mode="HTML",
             )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в команде /start: {e}")
-        if update.message:
-            await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+
+
+async def course_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    if chat_id != CHAT_ID:
+        await update.message.reply_text(f"Команда только в группе {TELEGRAM_GROUP_USERNAME}")
+        return
+    success = await course_handler.send_welcome_message(chat_id)
+    if success:
+        await update.message.reply_text("✅ Приветствие в группе. Закрепи при необходимости.")
+    else:
+        await update.message.reply_text("❌ Ошибка отправки.")
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки"""
-    try:
-        query = update.callback_query
-        data = (query.data or "").strip()
-        if data.startswith(("admin_", "feedback_")):
+    query = update.callback_query
+    data = (query.data or "").strip()
+    if data.startswith(("admin_", "feedback_")):
+        return
+
+    bot = context.bot
+    user = query.from_user
+    user_id = user.id
+    name = _display_name(user)
+    chat = update.effective_chat
+
+    # --- Личка: уроковые колбэки ---
+    if chat.type == ChatType.PRIVATE:
+        if not data.startswith("quiz_"):
+            await query.answer()
+        if data == "cnext":
+            if progress_manager.is_rate_limited(user_id, "lesson"):
+                await query.message.reply_text("⏰ Подожди минуту между уроками.")
+                return
+            ok, err = await deliver_next_lesson(user_id, name)
+            if not ok:
+                await query.message.reply_text(err)
             return
 
-        logger.info(f"Получен callback: {query.data} от пользователя {query.from_user.first_name}")
-        
+        if data.startswith("hw_done_"):
+            lesson_id = data[8:]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text("Это не активный урок. Открой актуальный из /next.")
+                return
+            await _finalize_lesson(user_id, name, lesson_id)
+            return
+
+        if data.startswith("hint_"):
+            lesson_id = data[5:]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text("Сначала открой урок через группу или /next.")
+                return
+            progress_manager.clear_expects_mentor(user_id)
+            hint = get_lesson(lesson_id).get("hint", "Подумай ещё раз над формулировкой задания.")
+            await query.message.reply_text(f"💡 {hint}", reply_markup=build_lesson_keyboard(lesson_id))
+            return
+
+        if data.startswith("codehelp_"):
+            lesson_id = data[9:]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text("Нет активного урока для кода.")
+                return
+            progress_manager.clear_expects_mentor(user_id)
+            progress_manager.set_expects_code(user_id, lesson_id)
+            await query.message.reply_text(
+                "📎 Пришли HTML одним сообщением (можно в блоке ```html ... ```). Проверю по чеклисту урока.",
+                reply_markup=build_lesson_keyboard(lesson_id),
+            )
+            return
+
+        if data.startswith("theoryquiz_"):
+            lesson_id = data[12:]
+            await send_micro_quiz(bot, user_id, lesson_id, 0)
+            return
+
+        if data.startswith("quiz_"):
+            rest = data[5:]
+            parts = rest.split("*")
+            if len(parts) != 3:
+                await query.answer()
+                await query.message.reply_text("Кнопка теста устарела — нажми «⚡ Быстрый тест» снова.")
+                return
+            lid, qis, cis = parts[0], parts[1], parts[2]
+            try:
+                qi = int(qis)
+                ci = int(cis)
+            except ValueError:
+                await query.answer()
+                return
+            try:
+                lesson = get_lesson(lid)
+            except KeyError:
+                await query.answer("Урок не найден.", show_alert=True)
+                return
+            quiz_list = lesson.get("quiz") or []
+            if qi < 0 or qi >= len(quiz_list):
+                await query.answer("Вопрос устарел.", show_alert=True)
+                return
+            q = quiz_list[qi]
+            correct = int(q.get("correct", 0))
+            if ci == correct:
+                await query.answer("✅ Верно!", show_alert=True)
+                if qi + 1 < len(quiz_list):
+                    await send_micro_quiz(bot, user_id, lid, qi + 1)
+                else:
+                    active = progress_manager.get_active_lesson_id(user_id)
+                    kb = build_lesson_keyboard(active) if active else build_lesson_keyboard(lid)
+                    qdone = (lesson.get("quiz_done_line") or "").strip()
+                    if not qdone:
+                        qdone = (
+                            "🎯 Тест пройден. Ты уже в теме — осталось руками: "
+                            "«✅ Я сделал» или «💬 Отправить код»."
+                        )
+                    await query.message.reply_text(qdone, reply_markup=kb)
+            else:
+                hint = (q.get("wrong_hint") or "Загляни в теорию урока.").strip()
+                if len(hint) > 180:
+                    hint = hint[:177] + "…"
+                await query.answer(f"❌ Почти — {hint}", show_alert=True)
+            return
+
+        if data.startswith("mentor_"):
+            lesson_id = data[7:]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text("Сначала открой актуальный урок через группу или /next.")
+                return
+            progress_manager.set_expects_mentor(user_id, lesson_id)
+            await query.message.reply_text(
+                "👤 <b>Опиши, что не получается</b> (одним сообщением):\n"
+                "• что уже сделал\n"
+                "• где затык / ошибка\n"
+                "• приложи код или скрин текстом\n\n"
+                "Сначала бот и ИИ закрывают большую часть вопросов — это сообщение уйдёт ментору целиком.\n"
+                "Отменить режим: нажми «💡 Подсказка» или «💬 Отправить код».",
+                reply_markup=build_lesson_keyboard(lesson_id),
+                parse_mode="HTML",
+            )
+            return
+
+        await query.message.reply_text("Неизвестная команда курса.")
+        return
+
+    # --- Группа ---
+    if str(chat.id) != CHAT_ID:
         await query.answer()
-        
-        chat_id = str(update.effective_chat.id)
-        logger.info(f"Chat ID: {chat_id}, ожидаемый: {CHAT_ID}")
-        
-        # Проверяем, что команда отправлена в нужной группе
-        if chat_id != CHAT_ID:
-            logger.warning(f"Callback из неправильной группы: {chat_id}")
-            await query.edit_message_text(
-                f"Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
-            )
+        await query.edit_message_text(f"Курс привязан к группе {TELEGRAM_GROUP_USERNAME}")
+        return
+
+    if data == "start_course":
+        if progress_manager.is_rate_limited(user_id, "lesson"):
+            await query.answer("Слишком часто — подожди минуту.", show_alert=True)
             return
-        
-        if query.data == "start_course":
-            logger.info("Обрабатываем start_course")
-            try:
-                user_id = query.from_user.id
-                
-                # Проверяем лимит запросов
-                if progress_manager.is_rate_limited(user_id, "lesson"):
-                    await query.edit_message_text(
-                        "⏰ Слишком частые запросы!\n\n"
-                        "Вы можете запросить следующий урок только раз в минуту.\n"
-                        "Это защищает систему от перегрузки для всех 567 пользователей."
-                    )
-                    return
-                
-                # Получаем следующий урок для пользователя
-                next_lesson = progress_manager.get_next_lesson(user_id)
-                
-                # Отправляем урок пользователю
-                success = await course_handler.send_lesson(chat_id, next_lesson, user_id)
-                
-                if success:
-                    # Обновляем прогресс пользователя
-                    progress_manager.update_user_progress(user_id, next_lesson)
-                    
-                    await query.edit_message_text(
-                        f"✅ Отлично! Урок {next_lesson + 1} отправлен!\n\n"
-                        f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}\n\n"
-                        f"💡 <b>Совет:</b> Изучите урок внимательно, прежде чем переходить к следующему!"
-                    )
-                else:
-                    await query.edit_message_text(
-                        "❌ Произошла ошибка при отправке урока. Попробуйте позже."
-                    )
-            except Exception as e:
-                logger.error(f"Ошибка в start_course: {e}")
-                await query.edit_message_text(
-                    f"Ошибка: {str(e)[:100]}..."
-                )
-        
-        elif query.data.startswith("next_lesson_"):
-            logger.info(f"Обрабатываем {query.data}")
-            try:
-                user_id = query.from_user.id
-                lesson_index = int(query.data.split("_")[2])
-                
-                # Отправляем следующий урок пользователю
-                success = await course_handler.send_lesson(chat_id, lesson_index, user_id)
-                
-                if success:
-                    # Обновляем прогресс пользователя
-                    progress_manager.update_user_progress(user_id, lesson_index)
-                    
-                    await query.edit_message_text(
-                        f"✅ Урок {lesson_index + 1} отправлен!\n\n"
-                        f"📊 Ваш прогресс: урок {lesson_index + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}"
-                    )
-                else:
-                    await query.edit_message_text(
-                        "❌ Произошла ошибка при отправке урока. Попробуйте позже."
-                    )
-            except Exception as e:
-                logger.error(f"Ошибка в next_lesson: {e}")
-                await query.edit_message_text(
-                    f"Ошибка: {str(e)[:100]}..."
-                )
-        elif query.data.startswith("check_theory_"):
-            logger.info(f"Обрабатываем {query.data}")
-            # Отправляем вопросы по теории
-            lesson_index = int(query.data.split("_")[2])
-            lesson = course_handler.make_lesson(lesson_index)
-            
-            theory_questions = f"""<b>🤔 ПРОВЕРКА ТЕОРИИ</b>
-
-<b>Вопросы по уроку {lesson_index + 1}:</b>
-
-1. Что означает HTML?
-2. Какие три основных элемента есть в каждом HTML-документе?
-3. В чем разница между парными и одиночными тегами?
-4. Зачем нужен атрибут alt у изображений?
-
-<b>📝 Ответьте на вопросы:</b>
-Напишите ответы в формате:
-1. [ваш ответ]
-2. [ваш ответ]
-3. [ваш ответ]
-4. [ваш ответ]
-
-<b>✅ Проверка:</b>
-Вадим и бот проверят ваши ответы и дадут обратную связь!"""
-            
-            await query.edit_message_text(
-                theory_questions,
-                parse_mode='HTML'
-            )
+        # первый урок или следующий, если нет активного
+        active = progress_manager.get_active_lesson_id(user_id)
+        if active:
+            await query.answer("У тебя уже открыт урок — загляни в личку боту.", show_alert=True)
+            return
+        ok, err = await deliver_next_lesson(user_id, name)
+        if ok:
+            await query.answer("Урок отправлен в личку!")
         else:
-            logger.warning(f"Неизвестный callback: {query.data}")
-            await query.answer("Неизвестная команда")
-                
-    except Exception as e:
-        logger.error(f"Ошибка в обработчике кнопок: {e}")
-        if update.callback_query:
-            await update.callback_query.edit_message_text("Произошла ошибка. Попробуйте позже.")
+            await query.answer(err[:180], show_alert=True)
+        return
+
+    if data.startswith("check_theory_"):
+        try:
+            idx = int(data.split("_")[2])
+        except (IndexError, ValueError):
+            idx = 0
+        lid = lesson_id_for_scheduler_index(idx)
+        ok = await send_micro_quiz(bot, user_id, lid, 0)
+        if ok:
+            await query.answer("Тест отправлен в личку!")
+        else:
+            await query.answer("Сначала /start боту в личке, затем снова нажми кнопку.", show_alert=True)
+        return
+
+    if data.startswith("next_lesson_"):
+        await query.answer("Уроки в личке у бота — жми «Начать обучение».", show_alert=True)
+        return
+
+    await query.answer()
+
+
+async def handle_course_mentor_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Одно сообщение пользователя пересылается ментору + мета; режим сбрасывается."""
+    user_id = update.effective_user.id
+    if not progress_manager.is_expecting_mentor(user_id):
+        return
+    lesson_id = progress_manager.get_expects_mentor_lesson_id(user_id) or "—"
+    mentor_chat = get_mentor_forward_chat_id()
+    msg = update.message
+    if not msg:
+        return
+
+    uname = update.effective_user.username
+    uname_s = f"@{uname}" if uname else "нет username"
+    first = update.effective_user.first_name or "—"
+
+    if not mentor_chat:
+        progress_manager.clear_expects_mentor(user_id)
+        await msg.reply_text(
+            f"Пересылка к ментору не настроена на сервере. Напиши напрямую: {MENTOR_TG_URL}",
+            reply_markup=build_lesson_keyboard(progress_manager.get_active_lesson_id(user_id) or lesson_id)
+            if progress_manager.get_active_lesson_id(user_id)
+            else None,
+        )
+        return
+
+    try:
+        await context.bot.forward_message(
+            chat_id=mentor_chat,
+            from_chat_id=msg.chat_id,
+            message_id=msg.message_id,
+        )
+        meta = (
+            "📩 <b>Запрос с курса (бот)</b>\n"
+            f"user_id: <code>{user_id}</code>\n"
+            f"username: {html.escape(uname_s)}\n"
+            f"имя: {html.escape(first)}\n"
+            f"lesson_id: <code>{html.escape(str(lesson_id))}</code>"
+        )
+        await context.bot.send_message(chat_id=mentor_chat, text=meta, parse_mode="HTML")
+    except TelegramError as e:
+        logger.warning("handle_course_mentor_message: %s", e)
+        await msg.reply_text(
+            "Не удалось доставить ментору. Попробуй позже или напиши напрямую: " + MENTOR_TG_URL,
+            reply_markup=build_lesson_keyboard(progress_manager.get_active_lesson_id(user_id) or lesson_id)
+            if progress_manager.get_active_lesson_id(user_id)
+            else None,
+        )
+        progress_manager.clear_expects_mentor(user_id)
+        return
+
+    progress_manager.clear_expects_mentor(user_id)
+    active = progress_manager.get_active_lesson_id(user_id)
+    kb = build_lesson_keyboard(active) if active else None
+    await msg.reply_text(
+        "✅ Отправил ментору. Обычно отвечают, когда освободятся.\n"
+        "Пока можешь уточнить у ИИ в свободной форме — это не мешает.",
+        reply_markup=kb,
+    )
+
+
+async def handle_course_code_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lesson_id = progress_manager.get_expected_code_lesson_id(user_id)
+    if not lesson_id or lesson_id != progress_manager.get_active_lesson_id(user_id):
+        return
+
+    text = update.message.text or ""
+    code = text
+    m = re.search(r"```(?:html)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        code = m.group(1).strip()
+
+    if len(code.strip()) < 10:
+        await update.message.reply_text("Слишком мало кода — вставь разметку целиком.", reply_markup=build_lesson_keyboard(lesson_id))
+        return
+
+    from enhanced_ai_handler import enhanced_ai_handler
+
+    L = get_lesson(lesson_id)
+    review = await enhanced_ai_handler.review_submission(
+        lesson_id,
+        L["task"],
+        list(L.get("checklist", [])),
+        code,
+    )
+    status = review["status"]
+    fb = review["feedback"]
+
+    if status == "OK":
+        progress_manager.clear_expects_code(user_id)
+        await update.message.reply_text(
+            f"✅ Зачёт.\n{fb}",
+            reply_markup=build_lesson_keyboard(lesson_id),
+        )
+        await _finalize_lesson(user_id, _display_name(update.effective_user), lesson_id)
+    else:
+        # Режим «жду код» остаётся — можно сразу прислать правку без повторного нажатия кнопки.
+        await update.message.reply_text(
+            f"💬 Пока без зачёта — ничего страшного, так у всех.\n{fb}",
+            reply_markup=build_lesson_keyboard(lesson_id),
+        )
+
 
 async def progress_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для просмотра прогресса"""
-    try:
-        user_id = update.effective_user.id
-        stats = progress_manager.get_user_stats(user_id)
-        
-        progress_text = f"""📊 <b>Ваш прогресс в курсе:</b>
+    user_id = update.effective_user.id
+    stats = progress_manager.get_user_stats(user_id)
+    active = stats.get("active_lesson_id") or "—"
+    text = (
+        f"📊 <b>Прогресс</b>\n"
+        f"✅ Уроков закрыто: {stats['completed_count']} / {stats['total_lessons']} ({stats['percent']}%)\n"
+        f"📌 Активный урок: <code>{active}</code>\n"
+        f"📅 Старт: {stats['started_at'][:10]}\n\n"
+        f"/next — следующий урок (если нет открытого)\n"
+        f"/reset — сброс"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
 
-🎯 <b>Текущий урок:</b> {stats['current_lesson'] + 1}
-✅ <b>Завершено уроков:</b> {stats['completed_count']}
-📅 <b>Начали обучение:</b> {stats['started_at'][:10]}
-🕐 <b>Последняя активность:</b> {stats['last_activity'][:16]}
-
-<b>Команды:</b>
-/progress - показать этот прогресс
-/reset - сбросить прогресс
-/next - получить следующий урок"""
-        
-        await update.message.reply_text(progress_text, parse_mode='HTML')
-        
-    except Exception as e:
-        logger.error(f"Ошибка в команде /progress: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для сброса прогресса"""
-    try:
-        user_id = update.effective_user.id
-        progress_manager.reset_user_progress(user_id)
-        
-        await update.message.reply_text(
-            "🔄 Ваш прогресс сброшен!\n\n"
-            "Теперь вы можете начать обучение заново с первого урока."
-        )
-        
-    except Exception as e:
-        logger.error(f"Ошибка в команде /reset: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+    progress_manager.reset_user_progress(update.effective_user.id)
+    await update.message.reply_text("🔄 Прогресс сброшен. Начни с кнопки в группе или /next в личке.")
 
-async def send_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для отправки кнопки 'Учиться бесплатно' (только для админов)"""
-    try:
-        user_id = update.effective_user.id
-        
-        # Проверяем, что это админ (Вадим)
-        if not is_admin_identity(user_id, getattr(update.effective_user, "username", None)):
-            await update.message.reply_text(
-                "❌ Эта команда доступна только администраторам."
-            )
-            return
-        
-        chat_id = str(update.effective_chat.id)
-        
-        # Проверяем, что команда отправлена в нужной группе
-        if chat_id != CHAT_ID:
-            await update.message.reply_text(
-                f"👋 Эта команда работает только в группе {TELEGRAM_GROUP_USERNAME}"
-            )
-            return
-        
-        # Отправляем кнопку
-        success = await course_handler.send_welcome_message(chat_id)
-        
-        if success:
-            await update.message.reply_text(
-                "✅ Кнопка 'Учиться бесплатно' отправлена в группу!"
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Произошла ошибка при отправке кнопки."
-            )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в команде /sendbutton: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для просмотра статистики группы (только для админов)"""
-    try:
-        user_id = update.effective_user.id
-        
-        # Проверяем, что это админ (Вадим)
-        if not is_admin_identity(user_id, getattr(update.effective_user, "username", None)):
-            await update.message.reply_text(
-                "❌ Эта команда доступна только администраторам."
-            )
-            return
-        
-        # Получаем статистику группы
-        group_stats = progress_manager.get_group_stats()
-        
-        stats_text = f"""📊 <b>СТАТИСТИКА ГРУППЫ</b>
-
-👥 <b>Всего пользователей:</b> {group_stats['total_users']}
-🟢 <b>Активных пользователей:</b> {group_stats['active_users']}
-📚 <b>Всего уроков запрошено:</b> {group_stats['total_lessons_requested']}
-📈 <b>Среднее уроков на пользователя:</b> {group_stats['average_lessons_per_user']:.1f}
-
-<b>💡 Анализ:</b>
-• Активность: {group_stats['active_users']/group_stats['total_users']*100:.1f}% пользователей активны
-• Прогресс: {group_stats['average_lessons_per_user']:.1f} уроков в среднем
-• Система работает стабильно для {group_stats['total_users']} пользователей"""
-        
-        await update.message.reply_text(stats_text, parse_mode='HTML')
-        
-    except Exception as e:
-        logger.error(f"Ошибка в команде /stats: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
 async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения следующего урока"""
-    try:
-        user_id = update.effective_user.id
-        chat_id = str(update.effective_chat.id)
-        
-        # Проверяем, что команда отправлена в нужной группе
-        if chat_id != CHAT_ID:
-            await update.message.reply_text(
-                f"👋 Привет! Этот бот работает только в группе {TELEGRAM_GROUP_USERNAME}"
-            )
-            return
-        
-        # Проверяем лимит запросов
-        if progress_manager.is_rate_limited(user_id, "lesson"):
-            await update.message.reply_text(
-                "⏰ Слишком частые запросы!\n\n"
-                "Вы можете запросить следующий урок только раз в минуту.\n"
-                "Это защищает систему от перегрузки для всех 567 пользователей."
-            )
-            return
-        
-        # Получаем следующий урок для пользователя
-        next_lesson = progress_manager.get_next_lesson(user_id)
-        
-        # Отправляем урок пользователю
-        success = await course_handler.send_lesson(chat_id, next_lesson, user_id)
-        
-        if success:
-            # Обновляем прогресс пользователя
-            progress_manager.update_user_progress(user_id, next_lesson)
-            
-            await update.message.reply_text(
-                f"✅ Урок {next_lesson + 1} отправлен!\n\n"
-                f"📊 Ваш прогресс: урок {next_lesson + 1} из {len(HTML_CSS_LESSONS) + len(JAVASCRIPT_LESSONS)}\n\n"
-                f"💡 <b>Совет:</b> Изучите урок внимательно, прежде чем переходить к следующему!"
-            )
-        else:
-            await update.message.reply_text(
-                "❌ Произошла ошибка при отправке урока. Попробуйте позже."
-            )
-            
-    except Exception as e:
-        logger.error(f"Ошибка в команде /next: {e}")
-        await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+    user_id = update.effective_user.id
+    if progress_manager.is_rate_limited(user_id, "lesson"):
+        await update.message.reply_text("⏰ Подожди минуту.")
+        return
+    name = _display_name(update.effective_user)
+    ok, err = await deliver_next_lesson(user_id, name)
+    if ok:
+        await update.message.reply_text("✅ Урок отправлен выше ↑")
+    else:
+        await update.message.reply_text(err)
+
+
+async def send_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_identity(update.effective_user.id, getattr(update.effective_user, "username", None)):
+        await update.message.reply_text("Только для админа.")
+        return
+    if str(update.effective_chat.id) != CHAT_ID:
+        await update.message.reply_text(f"Только в группе {TELEGRAM_GROUP_USERNAME}")
+        return
+    ok = await course_handler.send_welcome_message(str(update.effective_chat.id))
+    await update.message.reply_text("✅ Отправлено" if ok else "❌ Ошибка")
+
+
+async def groupstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin_identity(update.effective_user.id, getattr(update.effective_user, "username", None)):
+        await update.message.reply_text("Только для админа.")
+        return
+    gs = progress_manager.get_group_stats()
+    tu = max(gs["total_users"], 1)
+    text = (
+        f"📊 <b>Статистика курса</b>\n"
+        f"👥 Пользователей: {gs['total_users']}\n"
+        f"🟢 Активных 7д: {gs['active_users']}\n"
+        f"📚 Запросов уроков: {gs['total_lessons_requested']}\n"
+        f"📈 В среднем: {gs['average_lessons_per_user']:.1f}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def send_welcome_to_group():
+    if not BOT_TOKEN or not CHAT_ID:
+        logger.error("BOT_TOKEN или CHAT_ID не заданы")
+        return False
+    return await course_handler.send_welcome_message(CHAT_ID)
+
 
 def setup_course_handlers(application: Application):
-    """Настроить обработчики команд курса"""
     application.add_handler(CommandHandler("course", course_start_command))
     application.add_handler(CommandHandler("progress", progress_command))
     application.add_handler(CommandHandler("reset", reset_command))
     application.add_handler(CommandHandler("next", next_command))
-    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("groupstats", groupstats_command))
     application.add_handler(CommandHandler("sendbutton", send_button_command))
     application.add_handler(CallbackQueryHandler(button_callback))
-    logger.info("Обработчики команд курса настроены")
-
-async def send_welcome_to_group():
-    """Отправить приветственное сообщение в группу"""
-    if not BOT_TOKEN or not CHAT_ID:
-        logger.error("BOT_TOKEN или CHAT_ID не настроены!")
-        return False
-    
-    try:
-        success = await course_handler.send_welcome_message(CHAT_ID)
-        if success:
-            logger.info("Приветственное сообщение отправлено в группу")
-        return success
-    except Exception as e:
-        logger.error(f"Ошибка отправки приветственного сообщения: {e}")
-        return False
+    logger.info("Обработчики курса (ЛС + группа) настроены")

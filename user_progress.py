@@ -1,160 +1,265 @@
 """
-Модуль для управления индивидуальным прогрессом пользователей
+Прогресс курса: cursor + active_lesson_id + completed_lesson_ids.
+Совместимость: старые поля current_lesson / completed_lessons мигрируют при чтении.
 """
 
 import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List
-import asyncio
+from typing import Dict, List, Optional, Any
 from threading import Lock
 
 logger = logging.getLogger(__name__)
 
+
 class UserProgressManager:
-    """Менеджер прогресса пользователей с оптимизацией для больших групп"""
-    
     def __init__(self, progress_file: str = "user_progress.json"):
         self.progress_file = progress_file
         self.progress_data = self.load_progress()
-        self.lock = Lock()  # Защита от одновременного доступа
-        self.last_activity = {}  # Кэш последней активности
-        self.rate_limit = {}  # Защита от спама
-        
+        self.lock = Lock()
+        self.last_activity = {}
+        self.rate_limit = {}
+
     def load_progress(self) -> Dict:
-        """Загрузить данные о прогрессе пользователей"""
         try:
             if os.path.exists(self.progress_file):
-                with open(self.progress_file, 'r', encoding='utf-8') as f:
+                with open(self.progress_file, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
             logger.error(f"Ошибка загрузки прогресса: {e}")
         return {}
-    
-    def save_progress(self):
-        """Сохранить данные о прогрессе пользователей"""
+
+    def save_progress(self) -> None:
         try:
             with self.lock:
-                with open(self.progress_file, 'w', encoding='utf-8') as f:
+                with open(self.progress_file, "w", encoding="utf-8") as f:
                     json.dump(self.progress_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Ошибка сохранения прогресса: {e}")
-    
-    def is_rate_limited(self, user_id: int, action: str = "lesson") -> bool:
-        """Проверить, не превышен ли лимит запросов"""
-        now = datetime.now()
-        key = f"{user_id}_{action}"
-        
-        if key not in self.rate_limit:
-            self.rate_limit[key] = now
-            return False
-        
-        # Лимит: 1 урок в минуту, 5 уроков в час
-        if action == "lesson":
-            if now - self.rate_limit[key] < timedelta(minutes=1):
-                return True
-        elif action == "command":
-            if now - self.rate_limit[key] < timedelta(seconds=5):
-                return True
-        
-        self.rate_limit[key] = now
-        return False
-    
-    def get_user_progress(self, user_id: int) -> Dict:
-        """Получить прогресс пользователя"""
+
+    def _migrate_record(self, uid: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        if "curriculum_cursor" in data and "completed_lesson_ids" in data:
+            if "expects_mentor_for" not in data:
+                data["expects_mentor_for"] = None
+                self.progress_data[uid] = data
+                self.save_progress()
+            return data
+        old_idx = int(data.get("current_lesson", 0) or 0)
+        old_done = data.get("completed_lessons") or []
+        data["curriculum_cursor"] = old_idx
+        data["completed_lesson_ids"] = []
+        data["active_lesson_id"] = None
+        data["expects_code_for"] = None
+        data["expects_mentor_for"] = None
+        data["total_lessons_requested"] = data.get("total_lessons_requested", 0)
+        if old_done:
+            data["curriculum_cursor"] = max(old_idx, len(old_done))
+        self.progress_data[uid] = data
+        self.save_progress()
+        return data
+
+    def get_user_progress(self, user_id: int) -> Dict[str, Any]:
         with self.lock:
-            if str(user_id) not in self.progress_data:
-                self.progress_data[str(user_id)] = {
-                    "current_lesson": 0,
-                    "completed_lessons": [],
-                    "started_at": datetime.now().isoformat(),
-                    "last_activity": datetime.now().isoformat(),
+            key = str(user_id)
+            if key not in self.progress_data:
+                now = datetime.now().isoformat()
+                self.progress_data[key] = {
+                    "curriculum_cursor": 0,
+                    "completed_lesson_ids": [],
+                    "active_lesson_id": None,
+                    "expects_code_for": None,
+                    "expects_mentor_for": None,
+                    "started_at": now,
+                    "last_activity": now,
                     "total_lessons_requested": 0,
-                    "last_lesson_time": None
+                    "last_lesson_time": None,
                 }
                 self.save_progress()
-            
-            return self.progress_data[str(user_id)]
-    
-    def update_user_progress(self, user_id: int, lesson_index: int, completed: bool = False):
-        """Обновить прогресс пользователя"""
-        user_data = self.get_user_progress(user_id)
-        
-        if completed:
-            if lesson_index not in user_data["completed_lessons"]:
-                user_data["completed_lessons"].append(lesson_index)
-        
-        user_data["current_lesson"] = lesson_index
-        user_data["last_activity"] = datetime.now().isoformat()
-        user_data["total_lessons_requested"] = user_data.get("total_lessons_requested", 0) + 1
-        user_data["last_lesson_time"] = datetime.now().isoformat()
-        
+            return self._migrate_record(key, self.progress_data[key])
+
+    def is_rate_limited(self, user_id: int, action: str = "lesson") -> bool:
+        now = datetime.now()
+        k = f"{user_id}_{action}"
+        if k not in self.rate_limit:
+            self.rate_limit[k] = now
+            return False
+        if action == "lesson":
+            if now - self.rate_limit[k] < timedelta(minutes=1):
+                return True
+        elif action == "command":
+            if now - self.rate_limit[k] < timedelta(seconds=5):
+                return True
+        self.rate_limit[k] = now
+        return False
+
+    def get_active_lesson_id(self, user_id: int) -> Optional[str]:
+        return self.get_user_progress(user_id).get("active_lesson_id")
+
+    def set_active_lesson(self, user_id: int, lesson_id: str) -> None:
+        data = self.get_user_progress(user_id)
+        data["active_lesson_id"] = lesson_id
+        data["expects_code_for"] = None
+        data["expects_mentor_for"] = None
+        data["last_activity"] = datetime.now().isoformat()
+        data["total_lessons_requested"] = data.get("total_lessons_requested", 0) + 1
+        data["last_lesson_time"] = data["last_activity"]
         self.save_progress()
-    
-    def get_next_lesson(self, user_id: int) -> int:
-        """Получить следующий урок для пользователя"""
-        user_data = self.get_user_progress(user_id)
-        return user_data["current_lesson"]
-    
-    def get_user_stats(self, user_id: int) -> Dict:
-        """Получить статистику пользователя"""
-        user_data = self.get_user_progress(user_id)
+
+    def set_expects_code(self, user_id: int, lesson_id: str) -> None:
+        data = self.get_user_progress(user_id)
+        data["expects_code_for"] = lesson_id
+        data["expects_mentor_for"] = None
+        data["last_activity"] = datetime.now().isoformat()
+        self.save_progress()
+
+    def clear_expects_code(self, user_id: int) -> None:
+        data = self.get_user_progress(user_id)
+        data["expects_code_for"] = None
+        self.save_progress()
+
+    def set_expects_mentor(self, user_id: int, lesson_id: str) -> None:
+        data = self.get_user_progress(user_id)
+        data["expects_mentor_for"] = lesson_id
+        data["expects_code_for"] = None
+        data["last_activity"] = datetime.now().isoformat()
+        self.save_progress()
+
+    def clear_expects_mentor(self, user_id: int) -> None:
+        data = self.get_user_progress(user_id)
+        data["expects_mentor_for"] = None
+        self.save_progress()
+
+    def is_expecting_mentor(self, user_id: int) -> bool:
+        return bool(self.get_user_progress(user_id).get("expects_mentor_for"))
+
+    def get_expects_mentor_lesson_id(self, user_id: int) -> Optional[str]:
+        return self.get_user_progress(user_id).get("expects_mentor_for")
+
+    def is_expecting_code(self, user_id: int) -> bool:
+        return bool(self.get_user_progress(user_id).get("expects_code_for"))
+
+    def get_expected_code_lesson_id(self, user_id: int) -> Optional[str]:
+        return self.get_user_progress(user_id).get("expects_code_for")
+
+    def can_open_next_lesson(self, user_id: int, total: int) -> bool:
+        """Можно выдать новый урок (нет незакрытого active)."""
+        data = self.get_user_progress(user_id)
+        return data.get("active_lesson_id") is None and data["curriculum_cursor"] < total
+
+    def can_go_next(self, user_id: int, total: int) -> bool:
+        """Синоним: есть слот для следующего урока и нет активного ДЗ."""
+        return self.can_open_next_lesson(user_id, total)
+
+    def complete_lesson(self, user_id: int, lesson_id: str) -> bool:
+        """
+        Закрыть урок: только если lesson_id совпадает с active.
+        Увеличивает cursor, снимает active.
+        """
+        data = self.get_user_progress(user_id)
+        active = data.get("active_lesson_id")
+        if active != lesson_id:
+            return False
+        done: List[str] = list(data.get("completed_lesson_ids") or [])
+        if lesson_id not in done:
+            done.append(lesson_id)
+        data["completed_lesson_ids"] = done
+        data["curriculum_cursor"] = int(data.get("curriculum_cursor", 0)) + 1
+        data["active_lesson_id"] = None
+        data["expects_code_for"] = None
+        data["expects_mentor_for"] = None
+        data["last_activity"] = datetime.now().isoformat()
+        self.save_progress()
+        return True
+
+    def set_pending_homework(self, user_id: int, lesson_id: str) -> None:
+        """Явно назначить активный урок (уже открыт) — для согласованности API."""
+        self.set_active_lesson(user_id, lesson_id)
+
+    def get_cursor(self, user_id: int) -> int:
+        return int(self.get_user_progress(user_id).get("curriculum_cursor", 0))
+
+    def get_user_stats(self, user_id: int) -> Dict[str, Any]:
+        data = self.get_user_progress(user_id)
+        from curriculum import LESSON_ORDER, total_lessons
+
+        total = total_lessons()
+        done_n = len(data.get("completed_lesson_ids") or [])
+        cur = int(data.get("curriculum_cursor", 0))
+        active = data.get("active_lesson_id")
+        pct = int(round(100 * done_n / total)) if total else 0
         return {
-            "current_lesson": user_data["current_lesson"],
-            "completed_count": len(user_data["completed_lessons"]),
-            "started_at": user_data["started_at"],
-            "last_activity": user_data["last_activity"],
-            "total_lessons_requested": user_data.get("total_lessons_requested", 0),
-            "last_lesson_time": user_data.get("last_lesson_time")
+            "completed_count": done_n,
+            "total_lessons": total,
+            "percent": pct,
+            "cursor": cur,
+            "active_lesson_id": active,
+            "started_at": data.get("started_at", ""),
+            "last_activity": data.get("last_activity", ""),
+            "total_lessons_requested": data.get("total_lessons_requested", 0),
+            "last_lesson_time": data.get("last_lesson_time"),
         }
-    
-    def reset_user_progress(self, user_id: int):
-        """Сбросить прогресс пользователя"""
+
+    def reset_user_progress(self, user_id: int) -> None:
         with self.lock:
+            now = datetime.now().isoformat()
             self.progress_data[str(user_id)] = {
-                "current_lesson": 0,
-                "completed_lessons": [],
-                "started_at": datetime.now().isoformat(),
-                "last_activity": datetime.now().isoformat(),
+                "curriculum_cursor": 0,
+                "completed_lesson_ids": [],
+                "active_lesson_id": None,
+                "expects_code_for": None,
+                "expects_mentor_for": None,
+                "started_at": now,
+                "last_activity": now,
                 "total_lessons_requested": 0,
-                "last_lesson_time": None
+                "last_lesson_time": None,
             }
             self.save_progress()
-    
+
     def get_all_users(self) -> List[Dict]:
-        """Получить список всех пользователей"""
         users = []
-        for user_id, data in self.progress_data.items():
-            users.append({
-                "user_id": int(user_id),
-                "current_lesson": data["current_lesson"],
-                "completed_count": len(data["completed_lessons"]),
-                "started_at": data["started_at"],
-                "last_activity": data["last_activity"],
-                "total_lessons_requested": data.get("total_lessons_requested", 0)
-            })
+        for uid, data in self.progress_data.items():
+            users.append(
+                {
+                    "user_id": int(uid),
+                    "curriculum_cursor": data.get("curriculum_cursor", 0),
+                    "completed_count": len(data.get("completed_lesson_ids") or []),
+                    "started_at": data.get("started_at"),
+                    "last_activity": data.get("last_activity"),
+                    "total_lessons_requested": data.get("total_lessons_requested", 0),
+                }
+            )
         return users
-    
+
     def get_group_stats(self) -> Dict:
-        """Получить статистику по всей группе"""
         total_users = len(self.progress_data)
         active_users = 0
         total_lessons = 0
-        
-        for user_id, data in self.progress_data.items():
-            total_lessons += data.get("total_lessons_requested", 0)
-            # Активный пользователь - тот, кто был активен в последние 7 дней
-            last_activity = datetime.fromisoformat(data["last_activity"])
-            if datetime.now() - last_activity < timedelta(days=7):
-                active_users += 1
-        
+        for _, data in self.progress_data.items():
+            total_lessons += int(data.get("total_lessons_requested", 0) or 0)
+            try:
+                last_activity = datetime.fromisoformat(data["last_activity"])
+                if datetime.now() - last_activity < timedelta(days=7):
+                    active_users += 1
+            except (ValueError, KeyError, TypeError):
+                pass
         return {
             "total_users": total_users,
             "active_users": active_users,
             "total_lessons_requested": total_lessons,
-            "average_lessons_per_user": total_lessons / total_users if total_users > 0 else 0
+            "average_lessons_per_user": total_lessons / total_users if total_users > 0 else 0,
         }
 
-# Глобальный экземпляр менеджера прогресса
+    # --- Обратная совместимость для старого course_handler API ---
+    def update_user_progress(self, user_id: int, lesson_index: int, completed: bool = False) -> None:
+        """Устаревший вызов: не используется в новом потоке курса."""
+        data = self.get_user_progress(user_id)
+        data["last_activity"] = datetime.now().isoformat()
+        self.save_progress()
+
+    def get_next_lesson(self, user_id: int) -> int:
+        """Устаревший: возвращает cursor как int для совместимости тестов."""
+        return self.get_cursor(user_id)
+
+
 progress_manager = UserProgressManager()
