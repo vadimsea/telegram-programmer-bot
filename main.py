@@ -8,6 +8,7 @@ from aiohttp import web
 from io import StringIO, BytesIO
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -813,15 +814,24 @@ async def _send_admin_export_csv(query):
     )
 # Обработка ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    if context.error:
+        logger.error("Ошибка в обработчике", exc_info=context.error)
+    else:
+        logger.error("Ошибка в обработчике (context.error пуст)")
     try:
         if update and update.message:
             await update.message.reply_text(
                 "❌ Произошла ошибка. Попробуйте ещё раз.",
-                reply_markup=get_main_keyboard()
+                reply_markup=get_main_keyboard(),
             )
-    except:
-        pass
+        elif update and update.callback_query:
+            q = update.callback_query
+            try:
+                await q.answer("Что-то пошло не так. Попробуй ещё раз.", show_alert=True)
+            except TelegramError as te:
+                logger.warning("error_handler callback answer: %s", te)
+    except TelegramError as e:
+        logger.warning("error_handler notify user: %s", e)
 
 
 # Запуск бота

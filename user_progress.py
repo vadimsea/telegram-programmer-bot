@@ -7,7 +7,7 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Literal, Optional, Any, Tuple, Union
 from threading import Lock
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,11 @@ class UserProgressManager:
         self.lock = Lock()
         self.last_activity = {}
         self.rate_limit = {}
+        # Микро-квиз без БД: счёт ответов до завершения (ключ "user_id:lesson_id")
+        self._quiz_sessions: Dict[str, Dict[str, Any]] = {}
+        self._quiz_lock = Lock()
+        # Анти-спам quiz_soft в группу: последний пост по user_id:lesson_id
+        self._quiz_soft_group_last: Dict[str, datetime] = {}
 
     def load_progress(self) -> Dict:
         try:
@@ -260,6 +265,55 @@ class UserProgressManager:
     def get_next_lesson(self, user_id: int) -> int:
         """Устаревший: возвращает cursor как int для совместимости тестов."""
         return self.get_cursor(user_id)
+
+    def quiz_session_start(self, user_id: int, lesson_id: str, total_questions: int) -> None:
+        """Сбросить счётчики перед первым вопросом (или повтором квиза)."""
+        key = f"{user_id}:{lesson_id}"
+        with self._quiz_lock:
+            self._quiz_sessions[key] = {
+                "scores": [],
+                "total": max(0, int(total_questions)),
+            }
+
+    def quiz_session_clear(self, user_id: int, lesson_id: str) -> None:
+        with self._quiz_lock:
+            self._quiz_sessions.pop(f"{user_id}:{lesson_id}", None)
+
+    QUIZ_SOFT_GROUP_COOLDOWN = timedelta(seconds=180)
+
+    def should_post_quiz_soft_to_group(self, user_id: int, lesson_id: str) -> bool:
+        """True — можно постить «почти прошёл» в группу; выставляет время последнего поста."""
+        key = f"{user_id}:{lesson_id}"
+        now = datetime.now()
+        with self._quiz_lock:
+            last = self._quiz_soft_group_last.get(key)
+            if last is not None and (now - last) < self.QUIZ_SOFT_GROUP_COOLDOWN:
+                return False
+            self._quiz_soft_group_last[key] = now
+            return True
+
+    def quiz_session_append_score(
+        self, user_id: int, lesson_id: str, question_idx: int, is_correct: bool
+    ) -> Union[Literal["mismatch"], Tuple[int, int], None]:
+        """
+        Записать ответ на вопрос question_idx (по порядку 0..n-1).
+        Возвращает (correct_answers, total_questions), если квиз только что завершён;
+        None — если ещё есть вопросы;
+        "mismatch" — рассинхрон (старая кнопка и т.п.).
+        """
+        key = f"{user_id}:{lesson_id}"
+        with self._quiz_lock:
+            sess = self._quiz_sessions.get(key)
+            if not sess or sess["total"] <= 0:
+                return "mismatch"
+            if question_idx != len(sess["scores"]):
+                return "mismatch"
+            sess["scores"].append(bool(is_correct))
+            total = sess["total"]
+            if len(sess["scores"]) < total:
+                return None
+            correct = sum(1 for x in sess["scores"] if x)
+            return (correct, total)
 
 
 progress_manager = UserProgressManager()
