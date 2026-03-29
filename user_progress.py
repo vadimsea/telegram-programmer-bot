@@ -279,6 +279,35 @@ class UserProgressManager:
         with self._quiz_lock:
             self._quiz_sessions.pop(f"{user_id}:{lesson_id}", None)
 
+    def quiz_session_resume_next_index(self, user_id: int, lesson_id: str) -> Optional[int]:
+        """
+        Если квиз по этому уроку уже начат и не закончен — индекс следующего вопроса (len(scores)).
+        Иначе None (начинать с 0). «Зависшая» завершённая сессия (scores полные) — удаляется.
+        """
+        key = f"{user_id}:{lesson_id}"
+        with self._quiz_lock:
+            sess = self._quiz_sessions.get(key)
+            if not sess or sess["total"] <= 0:
+                return None
+            scores = sess["scores"]
+            total = int(sess["total"])
+            n = len(scores)
+            if n >= total:
+                self._quiz_sessions.pop(key, None)
+                return None
+            if n == 0:
+                return None
+            return n
+
+    def quiz_session_in_progress(self, user_id: int, lesson_id: str) -> bool:
+        """Квиз начат и ещё не завершён (в т.ч. на первом вопросе, 0 ответов)."""
+        key = f"{user_id}:{lesson_id}"
+        with self._quiz_lock:
+            sess = self._quiz_sessions.get(key)
+            if not sess or sess["total"] <= 0:
+                return False
+            return len(sess["scores"]) < int(sess["total"])
+
     QUIZ_SOFT_GROUP_COOLDOWN = timedelta(seconds=180)
 
     def should_post_quiz_soft_to_group(self, user_id: int, lesson_id: str) -> bool:

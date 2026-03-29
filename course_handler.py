@@ -67,13 +67,14 @@ def get_mentor_forward_chat_id() -> Optional[int]:
 
 
 def build_lesson_keyboard(lesson_id: str, include_next: bool = False) -> InlineKeyboardMarkup:
+    """Основной путь — практика (код); квиз — быстрая проверка; «Я сделал» — fallback."""
     rows = [
         [
-            InlineKeyboardButton("✅ Я сделал", callback_data=f"hw_done_{lesson_id}"),
             InlineKeyboardButton("💬 Отправить код", callback_data=f"codehelp_{lesson_id}"),
+            InlineKeyboardButton("✅ Я сделал", callback_data=f"hw_done_{lesson_id}"),
         ],
-        [InlineKeyboardButton("💡 Подсказка", callback_data=f"hint_{lesson_id}")],
         [InlineKeyboardButton("⚡ Быстрый тест", callback_data=f"theoryquiz_{lesson_id}")],
+        [InlineKeyboardButton("💡 Подсказка", callback_data=f"hint_{lesson_id}")],
         [
             InlineKeyboardButton("👤 Ментор", callback_data=f"mentor_{lesson_id}"),
             InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
@@ -87,11 +88,18 @@ def build_lesson_keyboard(lesson_id: str, include_next: bool = False) -> InlineK
     return InlineKeyboardMarkup(rows)
 
 
+def build_lesson_step1_keyboard(lesson_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("📖 Теория и задание", callback_data=f"{LESSON_BODY_PREFIX}{lesson_id}")]]
+    )
+
+
 _lesson_keyboard = build_lesson_keyboard
 
 # callback_data: quiz_{lesson_id}*{q_idx}*{choice} — разделитель только «*»
 QUIZ_PREFIX = "quiz_"
 THEORYQUIZ_PREFIX = "theoryquiz_"
+LESSON_BODY_PREFIX = "lesson_body_"
 
 
 def _quiz_callback_data(lesson_id: str, q_idx: int, choice: int) -> str:
@@ -135,6 +143,33 @@ def _quiz_keyboard(lesson_id: str, q_idx: int) -> Optional[InlineKeyboardMarkup]
     return InlineKeyboardMarkup(rows) if rows else None
 
 
+def resolve_group_quiz_lesson(user_id: int) -> Optional[str]:
+    """Урок для квиза из группы: активный или следующий по curriculum_cursor."""
+    active = progress_manager.get_active_lesson_id(user_id)
+    if active:
+        return active
+    total = total_lessons()
+    if not progress_manager.can_open_next_lesson(user_id, total):
+        return None
+    cur = progress_manager.get_cursor(user_id)
+    if cur < 0 or cur >= len(LESSON_ORDER):
+        return None
+    return LESSON_ORDER[cur]
+
+
+async def _notify_quiz_resume_if_needed(bot, user_id: int, lesson_id: str) -> None:
+    if not progress_manager.quiz_session_in_progress(user_id, lesson_id):
+        return
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text="Ты уже проходишь тест 👇",
+            parse_mode="HTML",
+        )
+    except (Forbidden, TelegramError):
+        pass
+
+
 async def send_micro_quiz(bot, user_id: int, lesson_id: str, question_idx: int = 0) -> bool:
     """
     Одно сообщение с одним вопросом и 2–3 кнопками. Без хранения состояния.
@@ -160,13 +195,21 @@ async def send_micro_quiz(bot, user_id: int, lesson_id: str, question_idx: int =
         )
         return False
 
+    # Запрос «вопрос 0» с группы/кнопки урока не должен сбрасывать уже идущий квиз — иначе снова 1/2.
+    effective_idx = question_idx
     if question_idx == 0:
-        progress_manager.quiz_session_start(user_id, lesson_id, len(quiz_list))
+        resume_at = progress_manager.quiz_session_resume_next_index(user_id, lesson_id)
+        if resume_at is not None:
+            effective_idx = resume_at
+        elif progress_manager.quiz_session_in_progress(user_id, lesson_id):
+            effective_idx = 0
+        else:
+            progress_manager.quiz_session_start(user_id, lesson_id, len(quiz_list))
 
-    q = quiz_list[question_idx]
-    kb = _quiz_keyboard(lesson_id, question_idx)
+    q = quiz_list[effective_idx]
+    kb = _quiz_keyboard(lesson_id, effective_idx)
     if not kb:
-        logger.error("send_micro_quiz: keyboard is None for %s idx=%s", lesson_id, question_idx)
+        logger.error("send_micro_quiz: keyboard is None for %s idx=%s", lesson_id, effective_idx)
         await bot.send_message(
             chat_id=user_id,
             text="Не удалось собрать кнопки теста (проверь длину callback). Напиши в группу.",
@@ -176,7 +219,7 @@ async def send_micro_quiz(bot, user_id: int, lesson_id: str, question_idx: int =
     q_text = html.escape(str(q.get("q", "")), quote=False)
     lid_esc = html.escape(lesson_id, quote=False)
     text = (
-        f"⚡ <b>Быстрый тест</b> ({question_idx + 1}/{len(quiz_list)})\n"
+        f"⚡ <b>Быстрый тест</b> ({effective_idx + 1}/{len(quiz_list)})\n"
         f"<code>{lid_esc}</code>\n\n"
         f"❓ {q_text}"
     )
@@ -285,6 +328,8 @@ async def _handle_quiz_callback(query: CallbackQuery, bot: Bot, user_id: int, da
         return
 
     correct_n, total_n = result
+    progress_manager.quiz_session_clear(user_id, lid)
+
     passed = total_n > 0 and (correct_n / total_n) >= QUIZ_PASS_RATIO
     print("quiz step: completed", lid, "correct", correct_n, "/", total_n, "passed", passed, flush=True)
     logger.info("quiz completed lesson=%s score=%s/%s passed=%s", lid, correct_n, total_n, passed)
@@ -322,7 +367,7 @@ class CourseHandler:
     def __init__(self):
         self.bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 
-    def _lesson_message(self, lesson_id: str) -> str:
+    def _lesson_message_part1(self, lesson_id: str) -> str:
         L = get_lesson(lesson_id)
         badge = L.get("progress_badge")
         opening = L.get("opening")
@@ -333,12 +378,19 @@ class CourseHandler:
         if opening:
             blocks.append(opening)
         blocks.append(L["hook"])
-        body = (
+        return (
             "\n\n".join(blocks)
-            + f"\n\n📖 <b>Теория</b>\n{L['theory']}\n\n"
+            + "\n\n👆 <b>Шаг 1.</b> Разберись с вопросом и тезисом выше.\n"
+            "👇 <b>Шаг 2.</b> Нажми кнопку — пришлю теорию и задание."
+        )
+
+    def _lesson_message_part2(self, lesson_id: str) -> str:
+        L = get_lesson(lesson_id)
+        body = (
+            f"📖 <b>Теория</b>\n{L['theory']}\n\n"
             f"⚡ <b>Нюанс</b>\n{L['nuance']}\n\n"
             f"🛠 <b>Задание</b>\n{L['task']}\n\n"
-            "Снизу кнопки: тест ⚡, потом практика; ИИ проверит код; ментор — если совсем стоп."
+            "Снизу: <b>практика</b> (код) и быстрый тест; «✅ Я сделал» — если уже готово."
         )
         if lesson_id == LESSON_ORDER[-1]:
             body += (
@@ -351,11 +403,11 @@ class CourseHandler:
         if not self.bot:
             return False
         try:
-            text = self._lesson_message(lesson_id)
+            text = self._lesson_message_part1(lesson_id)
             await self.bot.send_message(
                 chat_id=user_id,
                 text=text,
-                reply_markup=build_lesson_keyboard(lesson_id),
+                reply_markup=build_lesson_step1_keyboard(lesson_id),
                 parse_mode="HTML",
             )
             return True
@@ -373,8 +425,8 @@ class CourseHandler:
         safe = html.escape(display_name or "Участник")
         if kind == "opened":
             text = (
-                f"🔥 {safe} забрал урок в личку: <b>{html.escape(L['title'])}</b>.\n"
-                f"Кто ещё в деле — жми «Начать обучение» выше."
+                f"🔥 {safe} начал(а) урок: <b>{html.escape(L['title'])}</b>.\n"
+                f"Кто ещё в деле — жми «Начать или продолжить» в закрепе."
             )
         elif kind == "done":
             text = (
@@ -401,7 +453,7 @@ class CourseHandler:
             )
             keyboard = InlineKeyboardMarkup(
                 [
-                    [InlineKeyboardButton("🎓 Начать обучение", callback_data="start_course")],
+                    [InlineKeyboardButton("▶️ Начать или продолжить", callback_data="start_course")],
                     [
                         InlineKeyboardButton("👤 Написать ментору", url=MENTOR_TG_URL),
                         InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
@@ -771,10 +823,30 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        if data.startswith(LESSON_BODY_PREFIX):
+            lesson_id = data[len(LESSON_BODY_PREFIX) :]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text(
+                    "Это не активный урок. Открой актуальный через группу «Начать или продолжить» или /next."
+                )
+                return
+            try:
+                body = course_handler._lesson_message_part2(lesson_id)
+            except KeyError:
+                await query.message.reply_text("Урок не найден в каталоге.")
+                return
+            await query.message.reply_text(
+                body,
+                reply_markup=build_lesson_keyboard(lesson_id),
+                parse_mode="HTML",
+            )
+            return
+
         if data.startswith(THEORYQUIZ_PREFIX):
             lesson_id = data[len(THEORYQUIZ_PREFIX) :]
             print("theoryquiz start:", lesson_id, flush=True)
             logger.info("theoryquiz: lesson_id=%s", lesson_id)
+            await _notify_quiz_resume_if_needed(bot, user_id, lesson_id)
             await send_micro_quiz(bot, user_id, lesson_id, 0)
             return
 
@@ -809,10 +881,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if progress_manager.is_rate_limited(user_id, "lesson"):
             await query.answer("Слишком часто — подожди минуту.", show_alert=True)
             return
-        # первый урок или следующий, если нет активного
         active = progress_manager.get_active_lesson_id(user_id)
         if active:
-            await query.answer("У тебя уже открыт урок — загляни в личку боту.", show_alert=True)
+            ok = await course_handler.send_lesson_dm(user_id, active)
+            if ok:
+                await query.answer("Урок снова в личке — открой бота.")
+            else:
+                await query.answer(
+                    "Сначала открой бота: напиши /start в личку, потом снова нажми кнопку.",
+                    show_alert=True,
+                )
             return
         ok, err = await deliver_next_lesson(user_id, name)
         if ok:
@@ -821,21 +899,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer(err[:180], show_alert=True)
         return
 
-    if data.startswith("check_theory_"):
-        try:
-            idx = int(data.split("_")[2])
-        except (IndexError, ValueError):
-            idx = 0
-        lid = lesson_id_for_scheduler_index(idx)
+    if data == "check_theory" or data.startswith("check_theory_"):
+        if data == "check_theory":
+            lid = resolve_group_quiz_lesson(user_id)
+        else:
+            try:
+                idx = int(data.rsplit("_", 1)[-1])
+            except ValueError:
+                idx = 0
+            lid = lesson_id_for_scheduler_index(idx)
+        if not lid:
+            await query.answer(
+                "Ты уже прошёл этот блок или нет шага для теста. Жми «Начать или продолжить».",
+                show_alert=True,
+            )
+            return
+        await _notify_quiz_resume_if_needed(bot, user_id, lid)
         ok = await send_micro_quiz(bot, user_id, lid, 0)
         if ok:
             await query.answer("Тест отправлен в личку!")
         else:
-            await query.answer("Сначала /start боту в личке, затем снова нажми кнопку.", show_alert=True)
+            await query.answer("Сначала открой бота: /start в личку, затем снова кнопку.", show_alert=True)
         return
 
     if data.startswith("next_lesson_"):
-        await query.answer("Уроки в личке у бота — жми «Начать обучение».", show_alert=True)
+        await query.answer("Уроки только в личке у бота — жми «Начать или продолжить».", show_alert=True)
         return
 
     await query.answer()
