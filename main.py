@@ -962,6 +962,9 @@ async def version_handler(request: web.Request) -> web.Response:
             "service": service,
             "commit": commit,
             "bot_mode": "polling-only",
+            # Проверка, что задеплоена логика «пауза только после успешной выдачи урока»
+            "lesson_cooldown_sec": get_lesson_cooldown_seconds(),
+            "lesson_rate_only_after_success": True,
         }
     )
 
