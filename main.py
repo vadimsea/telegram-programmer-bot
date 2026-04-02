@@ -885,9 +885,11 @@ async def health_handler(request):
 
 
 async def main_entry():
-    # Запускаем планировщик курса в фоне
+    """
+    На Render сервис должен слушать PORT и отвечать на health-check.
+    Важно: ошибка/завершение bot_runner() не должна останавливать HTTP-сервер.
+    """
     scheduler_task = asyncio.create_task(run_forever())
-    
     bot_task = asyncio.create_task(bot_runner())
 
     app = web.Application()
@@ -896,19 +898,54 @@ async def main_entry():
 
     runner = web.AppRunner(app)
     await runner.setup()
+
     port = int(os.getenv("PORT", "8000"))
     site = web.TCPSite(runner, host="0.0.0.0", port=port)
+
+    bot_restart_delay_s = 5
+    max_bot_restart_delay_s = 300
+    scheduler_restart_delay_s = 30
 
     try:
         await site.start()
         logger.info("Health check server running on port %s", port)
-        await bot_task
+
+        # Держим процесс живым. Если бот/планировщик неожиданно завершатся —
+        # логируем и перезапускаем, но HTTP-сервер не выключаем.
+        while True:
+            try:
+                if bot_task.done():
+                    exc = bot_task.exception()
+                    if exc:
+                        logger.error("bot_runner crashed: %s", exc, exc_info=exc)
+                    else:
+                        logger.error("bot_runner stopped unexpectedly (no exception). Restarting...")
+
+                    bot_task = asyncio.create_task(bot_runner())
+                    await asyncio.sleep(bot_restart_delay_s)
+                    bot_restart_delay_s = min(bot_restart_delay_s * 2, max_bot_restart_delay_s)
+
+                if scheduler_task.done():
+                    exc = scheduler_task.exception()
+                    if exc:
+                        logger.error("scheduler_course.run_forever crashed: %s", exc, exc_info=exc)
+                    else:
+                        logger.error(
+                            "scheduler_course.run_forever stopped unexpectedly (no exception). Restarting..."
+                        )
+                    scheduler_task = asyncio.create_task(run_forever())
+                    await asyncio.sleep(scheduler_restart_delay_s)
+
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Нельзя позволить мелкой ошибке оборвать сервис.
+                logger.exception("Main loop error (kept running)")
+                await asyncio.sleep(10)
     except asyncio.CancelledError:
         bot_task.cancel()
         scheduler_task.cancel()
-        raise
-    except Exception:
-        logger.exception("Critical error in bot loop")
         raise
     finally:
         if not bot_task.done():
