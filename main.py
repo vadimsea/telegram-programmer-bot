@@ -835,9 +835,19 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Запуск бота
-async def bot_runner():
+_tg_app: Application | None = None
+
+
+def _webhook_base_url() -> str | None:
+    # Render отдаёт внешний URL в RENDER_EXTERNAL_URL (например https://xxx.onrender.com)
+    return (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_BASE_URL") or "").strip() or None
+
+
+async def bot_runner(*, mode: str = "auto") -> None:
     try:
         application = Application.builder().token(TELEGRAM_TOKEN).build()
+        global _tg_app
+        _tg_app = application
 
         # Добавляем обработчики
         application.add_handler(CommandHandler("start", start))
@@ -853,16 +863,26 @@ async def bot_runner():
         # Обработчик ошибок
         application.add_error_handler(error_handler)
 
-        # Если ранее был включён webhook, polling получит 409 Conflict.
-        # На Render используем polling, поэтому всегда очищаем webhook перед стартом.
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-        except Exception as e:
-            logger.warning("delete_webhook failed (continuing): %s", e)
-
         await application.initialize()
         await application.start()
-        await application.updater.start_polling()
+
+        base = _webhook_base_url()
+        use_webhook = (mode == "webhook") or (mode == "auto" and base is not None)
+
+        if use_webhook:
+            # Webhook mode: Telegram будет дергать наш /tg-webhook endpoint
+            try:
+                await application.bot.set_webhook(url=f"{base}/tg-webhook", drop_pending_updates=True)
+            except Exception as e:
+                logger.error("set_webhook failed: %s", e)
+                raise
+        else:
+            # Polling mode (local): важно очистить webhook, иначе будет 409 Conflict.
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=True)
+            except Exception as e:
+                logger.warning("delete_webhook failed (continuing): %s", e)
+            await application.updater.start_polling()
 
         logger.info("🤖 Бот запущен! Создан Вадимом (vadzim.by)")
         print("🚀 Бот запущен! Создан Вадимом (vadzim.by)")
@@ -891,17 +911,39 @@ async def health_handler(request):
     return web.Response(text="OK")
 
 
+async def tg_webhook_handler(request: web.Request) -> web.Response:
+    """
+    Webhook endpoint для Telegram (Render).
+    """
+    if _tg_app is None:
+        return web.Response(status=503, text="Bot not ready")
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(status=400, text="Bad JSON")
+
+    try:
+        update = Update.de_json(data, _tg_app.bot)
+        await _tg_app.update_queue.put(update)
+    except Exception as e:
+        logger.error("webhook update enqueue failed: %s", e)
+        return web.Response(status=500, text="Enqueue failed")
+    return web.Response(text="OK")
+
+
 async def main_entry():
     """
     На Render сервис должен слушать PORT и отвечать на health-check.
     Важно: ошибка/завершение bot_runner() не должна останавливать HTTP-сервер.
     """
     scheduler_task = asyncio.create_task(run_forever())
-    bot_task = asyncio.create_task(bot_runner())
+    bot_task = asyncio.create_task(bot_runner(mode="auto"))
 
     app = web.Application()
     app.router.add_get("/", health_handler)
     app.router.add_get("/health", health_handler)
+    # webhook endpoint for Render
+    app.router.add_post("/tg-webhook", tg_webhook_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
