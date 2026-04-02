@@ -969,18 +969,13 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
         logger.warning("WEBHOOK trace failed: %s", e)
 
     # В webhook-режиме мы не используем updater.start_webhook из PTB,
-    # поэтому обрабатываем update напрямую.
-    async def _run() -> None:
-        try:
-            await _tg_app.process_update(update)
-        except Exception as e:
-            logger.error("webhook update processing failed: %s", e, exc_info=e)
-
+    # поэтому обрабатываем update напрямую, но через Application.create_task,
+    # чтобы PTB корректно управлял жизненным циклом и логированием ошибок.
     try:
-        asyncio.create_task(_run())
+        _tg_app.create_task(_tg_app.process_update(update), name="tg-webhook-process-update")
     except Exception as e:
-        logger.error("webhook create_task failed: %s", e)
-        return web.Response(status=500, text="Task failed")
+        logger.error("webhook scheduling failed: %s", e, exc_info=e)
+        return web.Response(status=500, text="Schedule failed")
     return web.Response(text="OK")
 
 
