@@ -23,7 +23,7 @@ from curriculum import (
     lesson_id_for_scheduler_index,
     total_lessons,
 )
-from user_progress import progress_manager
+from user_progress import get_lesson_cooldown_seconds, progress_manager
 
 load_dotenv()
 
@@ -656,16 +656,18 @@ async def try_deliver_course_to_private(user_id: int, display_name: str) -> tupl
     Одна точка входа: как «Начать или продолжить» из группы.
     Возвращает (True, '') или (False, код/текст): 'rate', 'forbidden', либо текст ошибки deliver_next_lesson.
     """
-    if progress_manager.is_rate_limited(user_id, "lesson"):
+    if progress_manager.is_lesson_request_cooldown(user_id):
         return False, "rate"
     active = progress_manager.get_active_lesson_id(user_id)
     if active:
         ok = await course_handler.send_lesson_dm(user_id, active)
         if ok:
+            progress_manager.mark_lesson_request_done(user_id)
             return True, ""
         return False, "forbidden"
     ok, err = await deliver_next_lesson(user_id, display_name)
     if ok:
+        progress_manager.mark_lesson_request_done(user_id)
         return True, ""
     err_l = (err or "").lower()
     if "открой" in err_l and "бот" in err_l:
@@ -863,11 +865,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("private callback query.answer: %s", e)
 
         if data == "cnext":
-            if progress_manager.is_rate_limited(user_id, "lesson"):
-                await query.message.reply_text("⏰ Подожди минуту между уроками.")
+            if progress_manager.is_lesson_request_cooldown(user_id):
+                sec = get_lesson_cooldown_seconds()
+                await query.message.reply_text(f"⏰ Подожди ~{sec} сек. между запросами урока (защита от двойного нажатия).")
                 return
             ok, err = await deliver_next_lesson(user_id, name)
-            if not ok:
+            if ok:
+                progress_manager.mark_lesson_request_done(user_id)
+            else:
                 await query.message.reply_text(err)
             return
 
@@ -962,7 +967,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _answer_jump_to_private_bot(query, bot)
             return
         if hint == "rate":
-            await query.answer("Слишком часто — подожди минуту.", show_alert=True)
+            sec = get_lesson_cooldown_seconds()
+            await query.answer(f"Слишком часто — подожди ~{sec} сек.", show_alert=True)
             return
         if hint == "forbidden":
             await _answer_open_bot_from_group(query, bot)
@@ -1125,12 +1131,14 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def next_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if progress_manager.is_rate_limited(user_id, "lesson"):
-        await update.message.reply_text("⏰ Подожди минуту.")
+    if progress_manager.is_lesson_request_cooldown(user_id):
+        sec = get_lesson_cooldown_seconds()
+        await update.message.reply_text(f"⏰ Подожди ~{sec} сек. между запросами урока.")
         return
     name = _display_name(update.effective_user)
     ok, err = await deliver_next_lesson(user_id, name)
     if ok:
+        progress_manager.mark_lesson_request_done(user_id)
         await update.message.reply_text("✅ Урок отправлен выше ↑")
     else:
         await update.message.reply_text(err)

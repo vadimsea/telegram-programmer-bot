@@ -29,7 +29,7 @@ from course_handler import (
     handle_course_mentor_message,
     try_deliver_course_to_private,
 )
-from user_progress import progress_manager as course_progress_manager
+from user_progress import get_lesson_cooldown_seconds, progress_manager as course_progress_manager
 from telegram.constants import ChatType
 from permissions import is_admin_identity
 
@@ -376,8 +376,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         if hint == "rate":
+            sec = get_lesson_cooldown_seconds()
             await update.message.reply_text(
-                "⏰ Между уроками короткая пауза (~1 мин). Попробуй через минуту или снова нажми кнопку в группе."
+                f"⏰ С последней выдачи урока прошло мало времени. Подожди ~{sec} сек. "
+                "или снова нажми кнопку в группе."
             )
             return
         if hint == "forbidden":

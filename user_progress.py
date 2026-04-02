@@ -13,6 +13,20 @@ from threading import RLock
 logger = logging.getLogger(__name__)
 
 
+def _lesson_cooldown_seconds() -> int:
+    raw = (os.getenv("LESSON_COOLDOWN_SECONDS") or "20").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 20
+    return max(5, min(n, 120))
+
+
+def get_lesson_cooldown_seconds() -> int:
+    """Пауза между успешными выдачами урока (сек.), для текстов и env LESSON_COOLDOWN_SECONDS."""
+    return _lesson_cooldown_seconds()
+
+
 class UserProgressManager:
     def __init__(self, progress_file: str = "user_progress.json"):
         self.progress_file = progress_file
@@ -88,16 +102,28 @@ class UserProgressManager:
                 self.save_progress()
             return self._migrate_record(key, self.progress_data[key])
 
-    def is_rate_limited(self, user_id: int, action: str = "lesson") -> bool:
+    def is_lesson_request_cooldown(self, user_id: int) -> bool:
+        """
+        Анти-дребезг только после успешной выдачи урока (см. mark_lesson_request_done).
+        Не ставит метку на «провале» — можно сразу повторить после открытия бота / исправления ошибки.
+        """
+        k = f"{user_id}_lesson"
+        last = self.rate_limit.get(k)
+        if last is None:
+            return False
+        return datetime.now() - last < timedelta(seconds=_lesson_cooldown_seconds())
+
+    def mark_lesson_request_done(self, user_id: int) -> None:
+        """Вызов после успешной отправки урока в ЛС (новый урок или повтор текущего)."""
+        self.rate_limit[f"{user_id}_lesson"] = datetime.now()
+
+    def is_rate_limited(self, user_id: int, action: str = "command") -> bool:
         now = datetime.now()
         k = f"{user_id}_{action}"
         if k not in self.rate_limit:
             self.rate_limit[k] = now
             return False
-        if action == "lesson":
-            if now - self.rate_limit[k] < timedelta(minutes=1):
-                return True
-        elif action == "command":
+        if action == "command":
             if now - self.rate_limit[k] < timedelta(seconds=5):
                 return True
         self.rate_limit[k] = now
