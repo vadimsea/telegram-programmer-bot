@@ -8,7 +8,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Literal, Optional, Any, Tuple, Union
-from threading import Lock
+from threading import Lock, RLock
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,8 @@ class UserProgressManager:
     def __init__(self, progress_file: str = "user_progress.json"):
         self.progress_file = progress_file
         self.progress_data = self.load_progress()
-        self.lock = Lock()
+        # re-entrant lock: get_user_progress() может вызывать save_progress() в том же потоке
+        self.lock = RLock()
         self.last_activity = {}
         self.rate_limit = {}
         # Микро-квиз без БД: счёт ответов до завершения (ключ "user_id:lesson_id")
