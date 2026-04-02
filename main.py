@@ -901,7 +901,12 @@ async def bot_runner(*, mode: str = "auto") -> None:
                         u = await application.update_queue.get()
                         try:
                             logger.info("update_consumer got update: %s", type(u).__name__)
-                            await application.process_update(u)
+                            logger.info("update_consumer process_update start")
+                            try:
+                                await asyncio.wait_for(application.process_update(u), timeout=15)
+                            except asyncio.TimeoutError:
+                                logger.error("update_consumer process_update TIMEOUT (15s) — skipping update")
+                            logger.info("update_consumer process_update end")
                         except Exception as e:
                             logger.error("update_consumer process_update failed: %s", e, exc_info=e)
                         finally:
