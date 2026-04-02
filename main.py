@@ -848,12 +848,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Запуск бота
 _tg_app: Application | None = None
-_tg_consumer_task: asyncio.Task | None = None
-
-
-def _webhook_base_url() -> str | None:
-    # Render отдаёт внешний URL в RENDER_EXTERNAL_URL (например https://xxx.onrender.com)
-    return (os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBHOOK_BASE_URL") or "").strip() or None
 
 
 async def bot_runner(*, mode: str = "auto") -> None:
@@ -876,32 +870,16 @@ async def bot_runner(*, mode: str = "auto") -> None:
         # Обработчик ошибок
         application.add_error_handler(error_handler)
 
-        base = _webhook_base_url()
-        use_webhook = (mode == "webhook") or (mode == "auto" and base is not None)
-
-        # ВАЖНО: webhook и polling нельзя смешивать — иначе получим 409 Conflict.
-        if not use_webhook:
-            # Polling mode: сначала гарантированно гасим webhook, потом стартуем polling.
-            try:
-                await application.bot.delete_webhook(drop_pending_updates=True)
-            except Exception as e:
-                logger.warning("delete_webhook failed (continuing): %s", e)
+        # Стабильный режим: polling only.
+        # Всегда удаляем webhook перед getUpdates, чтобы исключить 409 Conflict.
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+        except Exception as e:
+            logger.warning("delete_webhook failed (continuing): %s", e)
 
         await application.initialize()
         await application.start()
-        # NOTE: webhook updates обрабатываем прямо в HTTP handler (см. tg_webhook_handler).
-        # Отдельный consumer очереди убран, т.к. он может зависнуть на одном апдейте и стопорить весь поток.
-
-        if use_webhook:
-            if not base:
-                raise RuntimeError("Webhook mode requested but WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL is not set.")
-            try:
-                await application.bot.set_webhook(url=f"{base}/tg-webhook", drop_pending_updates=True)
-            except Exception as e:
-                logger.error("set_webhook failed: %s", e)
-                raise
-        else:
-            await application.updater.start_polling()
+        await application.updater.start_polling(drop_pending_updates=True)
 
         logger.info("🤖 Бот запущен! Создан Вадимом (vadzim.by)")
         print("🚀 Бот запущен! Создан Вадимом (vadzim.by)")
@@ -934,52 +912,8 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
     """
     Webhook endpoint для Telegram (Render).
     """
-    if _tg_app is None:
-        return web.Response(status=503, text="Bot not ready")
-    try:
-        data = await request.json()
-    except Exception:
-        return web.Response(status=400, text="Bad JSON")
-
-    try:
-        update = Update.de_json(data, _tg_app.bot)
-    except Exception as e:
-        logger.error("webhook update decode failed: %s", e)
-        return web.Response(status=400, text="Bad update")
-
-    # Трассировка: чтобы увидеть ВСЕ входящие апдейты (сообщения/кнопки/команды).
-    try:
-        u = update
-        if getattr(u, "message", None) and u.message:
-            m = u.message
-            logger.info(
-                "WEBHOOK update: message chat_id=%s user_id=%s text=%r",
-                getattr(m.chat, "id", None),
-                getattr(m.from_user, "id", None),
-                (m.text or "")[:200],
-            )
-        elif getattr(u, "callback_query", None) and u.callback_query:
-            cq = u.callback_query
-            logger.info(
-                "WEBHOOK update: callback user_id=%s chat_id=%s data=%r",
-                getattr(getattr(cq, "from_user", None), "id", None),
-                getattr(getattr(getattr(cq, "message", None), "chat", None), "id", None),
-                (cq.data or "")[:200],
-            )
-        else:
-            logger.info("WEBHOOK update: type=%s keys=%s", type(u).__name__, list((data or {}).keys())[:20])
-    except Exception as e:
-        logger.warning("WEBHOOK trace failed: %s", e)
-
-    # Обрабатываем update синхронно (с таймаутом), чтобы ни один апдейт не мог повесить очередь.
-    try:
-        await asyncio.wait_for(_tg_app.process_update(update), timeout=10)
-    except asyncio.TimeoutError:
-        logger.error("webhook process_update TIMEOUT (10s) — skipping update")
-    except Exception as e:
-        logger.error("webhook process_update failed: %s", e, exc_info=e)
-        # Всё равно отвечаем 200, чтобы Telegram не ретраил бесконечно.
-    return web.Response(text="OK")
+    # В polling-only режиме endpoint оставлен только для проверок доступности.
+    return web.Response(text="Polling mode")
 
 
 async def main_entry():
@@ -988,13 +922,12 @@ async def main_entry():
     Важно: ошибка/завершение bot_runner() не должна останавливать HTTP-сервер.
     """
     scheduler_task = asyncio.create_task(run_forever())
-    bot_mode = (os.getenv("BOT_MODE") or "auto").strip().lower()
-    bot_task = asyncio.create_task(bot_runner(mode=bot_mode))
+    bot_task = asyncio.create_task(bot_runner(mode="polling"))
 
     app = web.Application()
     app.router.add_get("/", health_handler)
     app.router.add_get("/health", health_handler)
-    # webhook endpoint for Render
+    # Endpoint сохранён, но webhook не используется (polling-only).
     app.router.add_post("/tg-webhook", tg_webhook_handler)
 
     runner = web.AppRunner(app)
