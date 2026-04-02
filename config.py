@@ -98,9 +98,14 @@ def _normalize_username(value: Optional[str], default: str) -> str:
     return normalized
 
 
-TELEGRAM_TOKEN = _require_env('TELEGRAM_TOKEN')
-GROQ_API_KEY = _require_env('GROQ_API_KEY')
-HUGGING_FACE_TOKEN = _require_env('HUGGING_FACE_TOKEN')
+_TELEGRAM_TOKEN = _get_env("TELEGRAM_TOKEN") or _get_env("BOT_TOKEN")
+if not _TELEGRAM_TOKEN:
+    raise RuntimeError("Environment variable TELEGRAM_TOKEN (or legacy BOT_TOKEN) is required but was not set.")
+TELEGRAM_TOKEN = _TELEGRAM_TOKEN
+
+# AI keys are optional: bot должен жить и без них (есть fallback-ответы).
+GROQ_API_KEY = _get_env("GROQ_API_KEY", "") or ""
+HUGGING_FACE_TOKEN = _get_env("HUGGING_FACE_TOKEN", "") or ""
 
 GROQ_API_URL = _get_env('GROQ_API_URL', 'https://api.groq.com/openai/v1/chat/completions')
 GROQ_MODEL = _get_env('GROQ_MODEL', 'openai/gpt-oss-20b')

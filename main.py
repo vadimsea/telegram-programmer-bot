@@ -853,6 +853,13 @@ async def bot_runner():
         # Обработчик ошибок
         application.add_error_handler(error_handler)
 
+        # Если ранее был включён webhook, polling получит 409 Conflict.
+        # На Render используем polling, поэтому всегда очищаем webhook перед стартом.
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+        except Exception as e:
+            logger.warning("delete_webhook failed (continuing): %s", e)
+
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
