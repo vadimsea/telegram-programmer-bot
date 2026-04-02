@@ -20,6 +20,16 @@ from telegram.error import TelegramError
 
 from curriculum import get_lesson, lesson_id_for_scheduler_index, total_lessons
 
+try:
+    from course_handler import bot_deeplink_course, resolve_bot_username
+except Exception:  # при минимальном окружении без course_handler
+    async def resolve_bot_username(bot):  # type: ignore
+        return (os.getenv("TELEGRAM_BOT_USERNAME") or os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
+
+    def bot_deeplink_course(username: str) -> str:  # type: ignore
+        un = (username or "").strip().lstrip("@")
+        return f"https://t.me/{un}?start=course"
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -132,12 +142,19 @@ class CourseScheduler:
                 f"<code>{lid_esc}</code>\n\n"
                 f"💡 {ann['teaser']}\n\n"
                 f"🎯 <b>Теория и практика — только в личке у бота.</b>\n"
-                f"Жми <b>«Начать или продолжить»</b> — откроется твой актуальный шаг по прогрессу.\n\n"
+                f"Если с ботом ещё не переписывался — жми <b>«Открыть бота»</b> (откроется чат и придёт урок). "
+                f"Либо <b>«Начать или продолжить»</b> — тот же шаг по прогрессу.\n\n"
                 f"⚡ <b>Быстрый тест</b> — короткая проверка в ЛС (не дублирует полный урок).\n\n"
                 f"📅 {datetime.now().strftime('%d.%m.%Y')}"
             )
             group_slug = TELEGRAM_GROUP_USERNAME.lstrip("@")
-            keyboard = InlineKeyboardMarkup(
+            keyboard_rows = []
+            bot_un = await resolve_bot_username(self.bot)
+            if bot_un:
+                keyboard_rows.append(
+                    [InlineKeyboardButton("💬 Открыть бота (урок в личке)", url=bot_deeplink_course(bot_un))]
+                )
+            keyboard_rows.extend(
                 [
                     [InlineKeyboardButton("▶️ Начать или продолжить", callback_data="start_course")],
                     [InlineKeyboardButton("⚡ Быстрый тест", callback_data="check_theory")],
@@ -148,6 +165,7 @@ class CourseScheduler:
                     ],
                 ]
             )
+            keyboard = InlineKeyboardMarkup(keyboard_rows)
             message = await self.bot.send_message(
                 chat_id=CHAT_ID,
                 text=message_text,

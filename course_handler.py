@@ -42,6 +42,36 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = TELEGRAM_TOKEN if "TELEGRAM_TOKEN" in locals() else (os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN"))
 CHAT_ID = os.getenv("CHAT_ID")
 
+# Deep link для курса из группы: открывает ЛС с ботом и /start course (см. main.start)
+_COURSE_START_PAYLOAD = "course"
+
+
+async def resolve_bot_username(bot: Optional[Bot]) -> str:
+    """username бота для t.me/... ссылки; get_me при необходимости."""
+    if not bot:
+        return (os.getenv("TELEGRAM_BOT_USERNAME") or os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
+    u = (getattr(bot, "username", None) or "").strip()
+    if u:
+        return u
+    try:
+        me = await bot.get_me()
+        return (me.username or "").strip()
+    except TelegramError:
+        pass
+    return (os.getenv("TELEGRAM_BOT_USERNAME") or os.getenv("BOT_USERNAME") or "").strip().lstrip("@")
+
+
+def bot_deeplink_course(username: str) -> str:
+    un = (username or "").strip().lstrip("@")
+    return f"https://t.me/{un}?start={_COURSE_START_PAYLOAD}"
+
+
+def bot_deeplink_open_chat(username: str) -> str:
+    """Просто открыть ЛС с ботом (без /start) — урок/квиз уже отправлены, помощник не дублирует курс."""
+    un = (username or "").strip().lstrip("@")
+    return f"https://t.me/{un}"
+
+
 # Доля верных ответов для зачёта квиза (соц. пост + переход к следующему уроку)
 QUIZ_PASS_RATIO = 0.7
 
@@ -446,20 +476,26 @@ class CourseHandler:
         try:
             welcome_text = (
                 "🎉 <b>Курс по фронтенду</b>\n\n"
-                "Уроки приходят <b>в личку боту</b> — нажми кнопку ниже и открой диалог с ботом, если ещё не открывал.\n\n"
+                "Уроки приходят <b>в личку боту</b>. Если бот ещё не открыт — сначала жми <b>«Открыть бота»</b>, "
+                "в ЛС нажми Start — урок придёт сам. Потом всё можно продолжать кнопкой «Начать или продолжить».\n\n"
                 "📊 /progress — прогресс (в группе или в ЛС)\n"
                 "📖 /next — следующий урок (когда предыдущий закрыт)\n\n"
                 "<b>Начнём?</b>"
             )
-            keyboard = InlineKeyboardMarkup(
+            rows = []
+            un_w = await resolve_bot_username(self.bot)
+            if un_w:
+                rows.append(
+                    [InlineKeyboardButton("💬 Открыть бота (урок в личке)", url=bot_deeplink_course(un_w))]
+                )
+            rows.append([InlineKeyboardButton("▶️ Начать или продолжить", callback_data="start_course")])
+            rows.append(
                 [
-                    [InlineKeyboardButton("▶️ Начать или продолжить", callback_data="start_course")],
-                    [
-                        InlineKeyboardButton("👤 Написать ментору", url=MENTOR_TG_URL),
-                        InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
-                    ],
+                    InlineKeyboardButton("👤 Написать ментору", url=MENTOR_TG_URL),
+                    InlineKeyboardButton("🌐 Сайт ментора", url=MENTOR_SITE_URL),
                 ]
             )
+            keyboard = InlineKeyboardMarkup(rows)
             message = await self.bot.send_message(
                 chat_id=chat_id,
                 text=welcome_text,
@@ -578,6 +614,27 @@ def _display_name(user) -> str:
     return "Участник"
 
 
+async def _answer_open_bot_from_group(query: CallbackQuery, bot: Bot) -> None:
+    """Если пользователь не нажал Start у бота — открываем t.me/...?start=course (без запутывания текстом)."""
+    un = await resolve_bot_username(bot)
+    if un:
+        await query.answer(url=bot_deeplink_course(un))
+        return
+    await query.answer(
+        "Найди бота «Помощник Программиста» в Telegram и нажми «Запустить», затем снова эту кнопку.",
+        show_alert=True,
+    )
+
+
+async def _answer_jump_to_private_bot(query: CallbackQuery, bot: Bot) -> None:
+    """После успешной отправки в ЛС — сразу перекинуть в чат с ботом (без ?start=, чтобы не дергать /start course)."""
+    un = await resolve_bot_username(bot)
+    if un:
+        await query.answer(url=bot_deeplink_open_chat(un))
+        return
+    await query.answer("Смотри личку с ботом 👆")
+
+
 async def _open_lesson_for_user(
     user_id: int,
     display_name: str,
@@ -588,10 +645,32 @@ async def _open_lesson_for_user(
     progress_manager.set_active_lesson(user_id, lesson_id)
     ok = await course_handler.send_lesson_dm(user_id, lesson_id)
     if not ok:
-        return False, "Сначала открой диалог с ботом: напиши ему /start в личку, потом снова нажми кнопку в группе."
+        return False, "Сначала открой чат с ботом (кнопка «Открыть бота» в закрепе или ссылка после кнопки в группе)."
     if announce_opened:
         await course_handler.announce_group(display_name, lesson_id, "opened")
     return True, ""
+
+
+async def try_deliver_course_to_private(user_id: int, display_name: str) -> tuple[bool, str]:
+    """
+    Одна точка входа: как «Начать или продолжить» из группы.
+    Возвращает (True, '') или (False, код/текст): 'rate', 'forbidden', либо текст ошибки deliver_next_lesson.
+    """
+    if progress_manager.is_rate_limited(user_id, "lesson"):
+        return False, "rate"
+    active = progress_manager.get_active_lesson_id(user_id)
+    if active:
+        ok = await course_handler.send_lesson_dm(user_id, active)
+        if ok:
+            return True, ""
+        return False, "forbidden"
+    ok, err = await deliver_next_lesson(user_id, display_name)
+    if ok:
+        return True, ""
+    err_l = (err or "").lower()
+    if "открой" in err_l and "бот" in err_l:
+        return False, "forbidden"
+    return False, err or "error"
 
 
 async def deliver_next_lesson(
@@ -878,25 +957,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "start_course":
-        if progress_manager.is_rate_limited(user_id, "lesson"):
+        ok, hint = await try_deliver_course_to_private(user_id, name)
+        if ok:
+            await _answer_jump_to_private_bot(query, bot)
+            return
+        if hint == "rate":
             await query.answer("Слишком часто — подожди минуту.", show_alert=True)
             return
-        active = progress_manager.get_active_lesson_id(user_id)
-        if active:
-            ok = await course_handler.send_lesson_dm(user_id, active)
-            if ok:
-                await query.answer("Урок снова в личке — открой бота.")
-            else:
-                await query.answer(
-                    "Сначала открой бота: напиши /start в личку, потом снова нажми кнопку.",
-                    show_alert=True,
-                )
+        if hint == "forbidden":
+            await _answer_open_bot_from_group(query, bot)
             return
-        ok, err = await deliver_next_lesson(user_id, name)
-        if ok:
-            await query.answer("Урок отправлен в личку!")
-        else:
-            await query.answer(err[:180], show_alert=True)
+        await query.answer(hint[:200], show_alert=True)
         return
 
     if data == "check_theory" or data.startswith("check_theory_"):
@@ -917,13 +988,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _notify_quiz_resume_if_needed(bot, user_id, lid)
         ok = await send_micro_quiz(bot, user_id, lid, 0)
         if ok:
-            await query.answer("Тест отправлен в личку!")
+            await _answer_jump_to_private_bot(query, bot)
         else:
-            await query.answer("Сначала открой бота: /start в личку, затем снова кнопку.", show_alert=True)
+            await _answer_open_bot_from_group(query, bot)
         return
 
     if data.startswith("next_lesson_"):
-        await query.answer("Уроки только в личке у бота — жми «Начать или продолжить».", show_alert=True)
+        await _answer_jump_to_private_bot(query, bot)
         return
 
     await query.answer()

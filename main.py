@@ -27,6 +27,7 @@ from course_handler import (
     send_welcome_to_group,
     handle_course_code_message,
     handle_course_mentor_message,
+    try_deliver_course_to_private,
 )
 from user_progress import progress_manager as course_progress_manager
 from telegram.constants import ChatType
@@ -356,6 +357,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     })
 
     logger.info(f"👤 Пользователь {username} ({user_id}) запустил бота")
+
+    course_deep = (
+        update.effective_chat
+        and update.effective_chat.type == ChatType.PRIVATE
+        and context.args
+        and context.args[0].strip().lower() == "course"
+    )
+    if course_deep:
+        display = update.message.from_user.first_name or (
+            f"@{update.message.from_user.username}" if update.message.from_user.username else "Участник"
+        )
+        ok, hint = await try_deliver_course_to_private(user_id, display)
+        if ok:
+            await update.message.reply_text(
+                "✅ Урок — в сообщениях выше.\n"
+                "Дальше всё в этом чате с ботом. В группу можно вернуться когда удобно."
+            )
+            return
+        if hint == "rate":
+            await update.message.reply_text(
+                "⏰ Между уроками короткая пауза (~1 мин). Попробуй через минуту или снова нажми кнопку в группе."
+            )
+            return
+        if hint == "forbidden":
+            await update.message.reply_text(
+                "Чтобы получать уроки, нажми внизу «Start» или «Запустить» у этого бота и открой ссылку из группы ещё раз."
+            )
+            return
+        await update.message.reply_text(f"⚠️ {hint}")
+        return
 
     welcome_text = (
         "👋 Привет! Я Помощник Программиста\n"

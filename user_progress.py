@@ -8,7 +8,7 @@ import os
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Literal, Optional, Any, Tuple, Union
-from threading import Lock, RLock
+from threading import RLock
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,10 @@ class UserProgressManager:
         try:
             if os.path.exists(self.progress_file):
                 with open(self.progress_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    raw = f.read().strip()
+                    if not raw:
+                        return {}
+                    return json.loads(raw)
         except Exception as e:
             logger.error(f"Ошибка загрузки прогресса: {e}")
         return {}
