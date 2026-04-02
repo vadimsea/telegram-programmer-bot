@@ -928,10 +928,23 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
 
     try:
         update = Update.de_json(data, _tg_app.bot)
-        await _tg_app.update_queue.put(update)
     except Exception as e:
-        logger.error("webhook update enqueue failed: %s", e)
-        return web.Response(status=500, text="Enqueue failed")
+        logger.error("webhook update decode failed: %s", e)
+        return web.Response(status=400, text="Bad update")
+
+    # В webhook-режиме мы не используем updater.start_webhook из PTB,
+    # поэтому обрабатываем update напрямую.
+    async def _run() -> None:
+        try:
+            await _tg_app.process_update(update)
+        except Exception as e:
+            logger.error("webhook update processing failed: %s", e, exc_info=e)
+
+    try:
+        asyncio.create_task(_run())
+    except Exception as e:
+        logger.error("webhook create_task failed: %s", e)
+        return web.Response(status=500, text="Task failed")
     return web.Response(text="OK")
 
 
