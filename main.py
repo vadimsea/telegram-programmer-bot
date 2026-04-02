@@ -425,9 +425,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user_id = update.message.from_user.id
+        chat_type = getattr(update.effective_chat, "type", None)
+        raw_text = update.message.text or ""
+        logger.info(
+            "handle_message enter: chat_type=%s chat_id=%s user_id=%s text=%r expecting_code=%s expecting_mentor=%s",
+            chat_type,
+            getattr(update.effective_chat, "id", None),
+            user_id,
+            raw_text[:200],
+            course_progress_manager.is_expecting_code(user_id),
+            course_progress_manager.is_expecting_mentor(user_id),
+        )
         user_context = get_user_context(user_id)
 
         if not rate_limiter.is_allowed(user_id):
+            logger.info("handle_message rate_limited: user_id=%s", user_id)
             await update.message.reply_text(
                 "⏱️ Слишком много запросов! Подождите минуту.\n"
                 "💡 Это помогает мне лучше обслуживать всех пользователей.",
@@ -435,7 +447,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        text = update.message.text
+        text = raw_text
 
         if not text or len(text.strip()) == 0:
             await update.message.reply_text(
