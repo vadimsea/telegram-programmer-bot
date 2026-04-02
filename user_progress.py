@@ -23,7 +23,8 @@ class UserProgressManager:
         self.rate_limit = {}
         # Микро-квиз без БД: счёт ответов до завершения (ключ "user_id:lesson_id")
         self._quiz_sessions: Dict[str, Dict[str, Any]] = {}
-        self._quiz_lock = Lock()
+        # re-entrant, чтобы исключить блокировки при вложенных вызовах квиз-сессий
+        self._quiz_lock = RLock()
         # Анти-спам quiz_soft в группу: последний пост по user_id:lesson_id
         self._quiz_soft_group_last: Dict[str, datetime] = {}
 
