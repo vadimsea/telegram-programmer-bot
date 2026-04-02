@@ -916,6 +916,18 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
     return web.Response(text="Polling mode")
 
 
+async def version_handler(request: web.Request) -> web.Response:
+    commit = (os.getenv("RENDER_GIT_COMMIT") or "unknown").strip()
+    service = (os.getenv("RENDER_SERVICE_NAME") or "unknown").strip()
+    return web.json_response(
+        {
+            "service": service,
+            "commit": commit,
+            "bot_mode": "polling-only",
+        }
+    )
+
+
 async def main_entry():
     """
     На Render сервис должен слушать PORT и отвечать на health-check.
@@ -927,6 +939,7 @@ async def main_entry():
     app = web.Application()
     app.router.add_get("/", health_handler)
     app.router.add_get("/health", health_handler)
+    app.router.add_get("/version", version_handler)
     # Endpoint сохранён, но webhook не используется (polling-only).
     app.router.add_post("/tg-webhook", tg_webhook_handler)
 
