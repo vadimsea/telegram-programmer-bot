@@ -406,23 +406,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning("Получено обновление без сообщения")
             return
 
-        if (
-            update.effective_chat
-            and update.effective_chat.type == ChatType.PRIVATE
-            and update.message
-            and course_progress_manager.is_expecting_mentor(update.effective_user.id)
-        ):
-            await handle_course_mentor_message(update, context)
-            return
+        if update.effective_chat and update.effective_chat.type == ChatType.PRIVATE and update.message:
+            uid = update.effective_user.id
+            active = course_progress_manager.get_active_lesson_id(uid)
 
-        if (
-            update.effective_chat
-            and update.effective_chat.type == ChatType.PRIVATE
-            and update.message.text
-            and course_progress_manager.is_expecting_code(update.effective_user.id)
-        ):
-            await handle_course_code_message(update, context)
-            return
+            # Если режим "жду ментора" действительно относится к активному уроку — обрабатываем и выходим.
+            if course_progress_manager.is_expecting_mentor(uid):
+                mentor_lesson = course_progress_manager.get_expects_mentor_lesson_id(uid)
+                if mentor_lesson and mentor_lesson == active:
+                    await handle_course_mentor_message(update, context)
+                    return
+                # Зависший флаг не должен блокировать режим "помощника".
+                course_progress_manager.clear_expects_mentor(uid)
+                logger.info("Cleared stale expects_mentor flag: user_id=%s lesson=%s active=%s", uid, mentor_lesson, active)
+
+            # Аналогично для режима "жду код".
+            if update.message.text and course_progress_manager.is_expecting_code(uid):
+                code_lesson = course_progress_manager.get_expected_code_lesson_id(uid)
+                if code_lesson and code_lesson == active:
+                    await handle_course_code_message(update, context)
+                    return
+                course_progress_manager.clear_expects_code(uid)
+                logger.info("Cleared stale expects_code flag: user_id=%s lesson=%s active=%s", uid, code_lesson, active)
 
         user_id = update.message.from_user.id
         chat_type = getattr(update.effective_chat, "type", None)
