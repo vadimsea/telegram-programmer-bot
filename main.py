@@ -848,6 +848,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Запуск бота
 _tg_app: Application | None = None
+_tg_consumer_task: asyncio.Task | None = None
 
 
 def _webhook_base_url() -> str | None:
@@ -888,6 +889,25 @@ async def bot_runner(*, mode: str = "auto") -> None:
 
         await application.initialize()
         await application.start()
+
+        # В webhook-режиме Updater не стартует, поэтому делаем свой consumer очереди апдейтов.
+        # Это гарантирует, что update_queue -> process_update работает всегда.
+        global _tg_consumer_task
+        if _tg_consumer_task is None or _tg_consumer_task.done():
+            async def _consume_updates() -> None:
+                while True:
+                    u = await application.update_queue.get()
+                    try:
+                        await application.process_update(u)
+                    except Exception as e:
+                        logger.error("update_consumer process_update failed: %s", e, exc_info=e)
+                    finally:
+                        try:
+                            application.update_queue.task_done()
+                        except Exception:
+                            pass
+
+            _tg_consumer_task = asyncio.create_task(_consume_updates(), name="tg-update-consumer")
 
         if use_webhook:
             if not base:
@@ -968,14 +988,12 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
     except Exception as e:
         logger.warning("WEBHOOK trace failed: %s", e)
 
-    # В webhook-режиме мы не используем updater.start_webhook из PTB,
-    # поэтому обрабатываем update напрямую, но через Application.create_task,
-    # чтобы PTB корректно управлял жизненным циклом и логированием ошибок.
+    # Кладём update в очередь — его обработает consumer (см. bot_runner).
     try:
-        _tg_app.create_task(_tg_app.process_update(update), name="tg-webhook-process-update")
+        await _tg_app.update_queue.put(update)
     except Exception as e:
-        logger.error("webhook scheduling failed: %s", e, exc_info=e)
-        return web.Response(status=500, text="Schedule failed")
+        logger.error("webhook enqueue failed: %s", e, exc_info=e)
+        return web.Response(status=500, text="Enqueue failed")
     return web.Response(text="OK")
 
 
