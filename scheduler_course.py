@@ -4,9 +4,11 @@
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Dict
 
@@ -43,6 +45,33 @@ MENTOR_URL = "https://t.me/vadzimbelarus"
 SITE_URL = "https://vadzim.by/"
 
 
+_ALLOWED_INLINE_TAGS = {"b", "i", "code", "pre", "a"}
+
+
+def _sanitize_html_fragment(text: str) -> str:
+    """
+    Telegram HTML parse_mode не поддерживает произвольные теги (например <button>).
+    Оставляем только базовые теги, остальное экранируем.
+    """
+    if not text:
+        return ""
+
+    def repl(m: re.Match) -> str:
+        raw = m.group(0)
+        inner = m.group(1) or ""
+        inner = inner.strip()
+        if not inner:
+            return html.escape(raw, quote=False)
+        # tag name: first token without leading '/'
+        first = inner.split()[0]
+        name = first.lstrip("/").lower()
+        if name in _ALLOWED_INLINE_TAGS:
+            return raw
+        return html.escape(raw, quote=False)
+
+    return re.sub(r"<([^>]+)>", repl, text)
+
+
 class CourseScheduler:
     """Публикация в группу: мотивация + кнопки (источник тем — curriculum)."""
 
@@ -77,9 +106,11 @@ class CourseScheduler:
         teaser_line = opening.split("\n")[0] if opening else (hook[:160] + "…" if len(hook) > 160 else hook)
         return {
             "lesson_id": lid,
-            "title": L.get("title", lid),
-            "badge": (L.get("progress_badge") or "").strip(),
-            "teaser": teaser_line,
+            # title может содержать неподдерживаемые HTML-теги (например "<button>")
+            "title": _sanitize_html_fragment(str(L.get("title", lid))),
+            "badge": html.escape((L.get("progress_badge") or "").strip(), quote=False),
+            # teaser часто содержит <code> — оставляем, но режем неподдерживаемые теги
+            "teaser": _sanitize_html_fragment(teaser_line),
         }
 
     async def post_lesson(self) -> None:
@@ -93,11 +124,12 @@ class CourseScheduler:
         try:
             ann = self.make_announcement(self.current_index)
             badge_line = f"📍 <b>{ann['badge']}</b>\n\n" if ann["badge"] else ""
+            lid_esc = html.escape(str(ann["lesson_id"]), quote=False)
             message_text = (
                 f"👋 <b>Сейчас в фокусе курса</b>\n\n"
                 f"{badge_line}"
                 f"📚 <b>{ann['title']}</b>\n"
-                f"<code>{ann['lesson_id']}</code>\n\n"
+                f"<code>{lid_esc}</code>\n\n"
                 f"💡 {ann['teaser']}\n\n"
                 f"🎯 <b>Теория и практика — только в личке у бота.</b>\n"
                 f"Жми <b>«Начать или продолжить»</b> — откроется твой актуальный шаг по прогрессу.\n\n"
