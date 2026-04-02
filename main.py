@@ -891,9 +891,21 @@ async def bot_runner(*, mode: str = "auto") -> None:
         await application.start()
 
         # В webhook-режиме Updater не стартует, поэтому делаем свой consumer очереди апдейтов.
-        # Это гарантирует, что update_queue -> process_update работает всегда.
+        # Важно: при рестартах Render может создаваться новый Application — старый consumer нужно отменять.
         global _tg_consumer_task
-        if _tg_consumer_task is None or _tg_consumer_task.done():
+        if _tg_consumer_task is not None and not _tg_consumer_task.done():
+            try:
+                _tg_consumer_task.cancel()
+            except Exception:
+                pass
+            try:
+                await _tg_consumer_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        if True:
             async def _consume_updates() -> None:
                 logger.info("update_consumer started (mode=%s)", mode)
                 try:
