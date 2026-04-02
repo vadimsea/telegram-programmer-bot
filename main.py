@@ -23,6 +23,7 @@ from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
 from scheduler_course import run_forever
 from course_handler import (
+    COURSE_GROUP_CHAT_ID,
     setup_course_handlers,
     send_welcome_to_group,
     handle_course_code_message,
@@ -905,6 +906,14 @@ async def bot_runner(*, mode: str = "auto") -> None:
         setup_course_handlers(application)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+        if COURSE_GROUP_CHAT_ID is None:
+            print(
+                "WARNING: CHAT_ID не задан или невалиден — кнопки курса в группе не работают. "
+                "Задай CHAT_ID в Render (число -100…).",
+                flush=True,
+            )
+            logger.error("CHAT_ID не задан — групповой курс отключён до исправления env")
+
         # Обработчик ошибок
         application.add_error_handler(error_handler)
 
@@ -965,6 +974,7 @@ async def version_handler(request: web.Request) -> web.Response:
             # Проверка, что задеплоена логика «пауза только после успешной выдачи урока»
             "lesson_cooldown_sec": get_lesson_cooldown_seconds(),
             "lesson_rate_only_after_success": True,
+            "course_group_chat_configured": COURSE_GROUP_CHAT_ID is not None,
         }
     )
 

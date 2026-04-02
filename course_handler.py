@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from telegram import Bot, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update, User
 from telegram.constants import ChatType
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
-from telegram.error import TelegramError, Forbidden
+from telegram.error import BadRequest, TelegramError, Forbidden
 
 from permissions import is_admin_identity
 from curriculum import (
@@ -40,7 +40,24 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = TELEGRAM_TOKEN if "TELEGRAM_TOKEN" in locals() else (os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN"))
-CHAT_ID = os.getenv("CHAT_ID")
+
+_CHAT_ID_RAW = os.getenv("CHAT_ID")
+
+
+def _parse_course_group_chat_id(raw: Optional[str]) -> Optional[int]:
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        logger.warning("CHAT_ID не является числом (%r) — задай id группы как -100…", raw)
+        return None
+
+
+# int для сравнения с update.effective_chat.id (обязательно для кнопок в группе)
+COURSE_GROUP_CHAT_ID: Optional[int] = _parse_course_group_chat_id(_CHAT_ID_RAW)
+# для send_message / pin (строка с числом)
+CHAT_ID: Optional[str] = str(COURSE_GROUP_CHAT_ID) if COURSE_GROUP_CHAT_ID is not None else None
 
 # Deep link для курса из группы: открывает ЛС с ботом и /start course (см. main.start)
 _COURSE_START_PAYLOAD = "course"
@@ -70,6 +87,22 @@ def bot_deeplink_open_chat(username: str) -> str:
     """Просто открыть ЛС с ботом (без /start) — урок/квиз уже отправлены, помощник не дублирует курс."""
     un = (username or "").strip().lstrip("@")
     return f"https://t.me/{un}"
+
+
+def is_course_target_group(chat_id: int) -> bool:
+    return COURSE_GROUP_CHAT_ID is not None and int(chat_id) == COURSE_GROUP_CHAT_ID
+
+
+async def _safe_callback_answer_url(query: CallbackQuery, url: str, *, fallback_alert: str) -> None:
+    """answer(url=…) иногда отклоняется API — не оставляем крутилку без ответа."""
+    try:
+        await query.answer(url=url)
+    except (BadRequest, TelegramError) as e:
+        logger.warning("callback answer(url=%r…): %s", url[:40], e)
+        try:
+            await query.answer(fallback_alert[:190], show_alert=True)
+        except TelegramError as e2:
+            logger.warning("callback answer fallback: %s", e2)
 
 
 # Доля верных ответов для зачёта квиза (соц. пост + переход к следующему уроку)
@@ -618,7 +651,12 @@ async def _answer_open_bot_from_group(query: CallbackQuery, bot: Bot) -> None:
     """Если пользователь не нажал Start у бота — открываем t.me/...?start=course (без запутывания текстом)."""
     un = await resolve_bot_username(bot)
     if un:
-        await query.answer(url=bot_deeplink_course(un))
+        link = bot_deeplink_course(un)
+        await _safe_callback_answer_url(
+            query,
+            link,
+            fallback_alert=f"Открой бота вручную: {link}",
+        )
         return
     await query.answer(
         "Найди бота «Помощник Программиста» в Telegram и нажми «Запустить», затем снова эту кнопку.",
@@ -630,9 +668,17 @@ async def _answer_jump_to_private_bot(query: CallbackQuery, bot: Bot) -> None:
     """После успешной отправки в ЛС — сразу перекинуть в чат с ботом (без ?start=, чтобы не дергать /start course)."""
     un = await resolve_bot_username(bot)
     if un:
-        await query.answer(url=bot_deeplink_open_chat(un))
+        link = bot_deeplink_open_chat(un)
+        await _safe_callback_answer_url(
+            query,
+            link,
+            fallback_alert=f"Урок в личке. Открой бота: {link}",
+        )
         return
-    await query.answer("Смотри личку с ботом 👆")
+    try:
+        await query.answer("Смотри личку с ботом 👆")
+    except TelegramError as e:
+        logger.warning("_answer_jump_to_private_bot: %s", e)
 
 
 async def _open_lesson_for_user(
@@ -830,11 +876,13 @@ async def _finalize_lesson(
 
 
 async def course_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    if chat_id != CHAT_ID:
+    if COURSE_GROUP_CHAT_ID is None:
+        await update.message.reply_text("На сервере не задан CHAT_ID группы курса.")
+        return
+    if not is_course_target_group(update.effective_chat.id):
         await update.message.reply_text(f"Команда только в группе {TELEGRAM_GROUP_USERNAME}")
         return
-    success = await course_handler.send_welcome_message(chat_id)
+    success = await course_handler.send_welcome_message(str(update.effective_chat.id))
     if success:
         await update.message.reply_text("✅ Приветствие в группе. Закрепи при необходимости.")
     else:
@@ -956,47 +1004,88 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # --- Группа ---
-    if str(chat.id) != CHAT_ID:
-        await query.answer()
-        await query.edit_message_text(f"Курс привязан к группе {TELEGRAM_GROUP_USERNAME}")
-        return
+    if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        if COURSE_GROUP_CHAT_ID is None:
+            logger.error(
+                "course callback в группе chat_id=%s, но CHAT_ID в окружении не задан — кнопки курса отключены",
+                chat.id,
+            )
+            try:
+                await query.answer(
+                    "Курс на сервере не привязан к группе (нет CHAT_ID). Обратись к администратору.",
+                    show_alert=True,
+                )
+            except TelegramError as e:
+                logger.warning("query.answer (no CHAT_ID): %s", e)
+            return
+        if not is_course_target_group(chat.id):
+            logger.info(
+                "course callback из другой группы: chat_id=%s ожидали %s",
+                chat.id,
+                COURSE_GROUP_CHAT_ID,
+            )
+            try:
+                await query.answer()
+            except TelegramError:
+                pass
+            try:
+                await query.edit_message_text(f"Курс привязан к группе {TELEGRAM_GROUP_USERNAME}")
+            except TelegramError as e:
+                logger.warning("edit_message wrong group: %s", e)
+            return
 
     if data == "start_course":
-        ok, hint = await try_deliver_course_to_private(user_id, name)
-        if ok:
-            await _answer_jump_to_private_bot(query, bot)
-            return
-        if hint == "rate":
-            sec = get_lesson_cooldown_seconds()
-            await query.answer(f"Слишком часто — подожди ~{sec} сек.", show_alert=True)
-            return
-        if hint == "forbidden":
-            await _answer_open_bot_from_group(query, bot)
-            return
-        await query.answer(hint[:200], show_alert=True)
+        try:
+            logger.info("start_course: user_id=%s chat_id=%s", user_id, getattr(chat, "id", None))
+            ok, hint = await try_deliver_course_to_private(user_id, name)
+            if ok:
+                await _answer_jump_to_private_bot(query, bot)
+                return
+            if hint == "rate":
+                sec = get_lesson_cooldown_seconds()
+                await query.answer(f"Слишком часто — подожди ~{sec} сек.", show_alert=True)
+                return
+            if hint == "forbidden":
+                await _answer_open_bot_from_group(query, bot)
+                return
+            await query.answer(hint[:200], show_alert=True)
+        except Exception as e:
+            logger.exception("start_course: непойманная ошибка: %s", e)
+            try:
+                await query.answer("Сервис временно недоступен. Попробуй через минуту.", show_alert=True)
+            except TelegramError as te:
+                logger.warning("start_course error answer: %s", te)
         return
 
     if data == "check_theory" or data.startswith("check_theory_"):
-        if data == "check_theory":
-            lid = resolve_group_quiz_lesson(user_id)
-        else:
+        try:
+            logger.info("check_theory: user_id=%s chat_id=%s data=%r", user_id, getattr(chat, "id", None), data)
+            if data == "check_theory":
+                lid = resolve_group_quiz_lesson(user_id)
+            else:
+                try:
+                    idx = int(data.rsplit("_", 1)[-1])
+                except ValueError:
+                    idx = 0
+                lid = lesson_id_for_scheduler_index(idx)
+            if not lid:
+                await query.answer(
+                    "Ты уже прошёл этот блок или нет шага для теста. Жми «Начать или продолжить».",
+                    show_alert=True,
+                )
+                return
+            await _notify_quiz_resume_if_needed(bot, user_id, lid)
+            ok = await send_micro_quiz(bot, user_id, lid, 0)
+            if ok:
+                await _answer_jump_to_private_bot(query, bot)
+            else:
+                await _answer_open_bot_from_group(query, bot)
+        except Exception as e:
+            logger.exception("check_theory: ошибка: %s", e)
             try:
-                idx = int(data.rsplit("_", 1)[-1])
-            except ValueError:
-                idx = 0
-            lid = lesson_id_for_scheduler_index(idx)
-        if not lid:
-            await query.answer(
-                "Ты уже прошёл этот блок или нет шага для теста. Жми «Начать или продолжить».",
-                show_alert=True,
-            )
-            return
-        await _notify_quiz_resume_if_needed(bot, user_id, lid)
-        ok = await send_micro_quiz(bot, user_id, lid, 0)
-        if ok:
-            await _answer_jump_to_private_bot(query, bot)
-        else:
-            await _answer_open_bot_from_group(query, bot)
+                await query.answer("Не удалось отправить тест. Попробуй позже.", show_alert=True)
+            except TelegramError as te:
+                logger.warning("check_theory answer: %s", te)
         return
 
     if data.startswith("next_lesson_"):
@@ -1148,7 +1237,7 @@ async def send_button_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not is_admin_identity(update.effective_user.id, getattr(update.effective_user, "username", None)):
         await update.message.reply_text("Только для админа.")
         return
-    if str(update.effective_chat.id) != CHAT_ID:
+    if COURSE_GROUP_CHAT_ID is None or not is_course_target_group(update.effective_chat.id):
         await update.message.reply_text(f"Только в группе {TELEGRAM_GROUP_USERNAME}")
         return
     ok = await course_handler.send_welcome_message(str(update.effective_chat.id))
@@ -1186,4 +1275,11 @@ def setup_course_handlers(application: Application):
     application.add_handler(CommandHandler("groupstats", groupstats_command))
     application.add_handler(CommandHandler("sendbutton", send_button_command))
     application.add_handler(CallbackQueryHandler(button_callback))
+    if COURSE_GROUP_CHAT_ID is None:
+        logger.error(
+            "CHAT_ID не задан или невалиден — кнопки «Начать или продолжить» в группе не работают. "
+            "Укажи в Render переменную CHAT_ID = id группы (число -100…)."
+        )
+    else:
+        logger.info("Курс: ожидаемая группа chat_id=%s", COURSE_GROUP_CHAT_ID)
     logger.info("Обработчики курса (ЛС + группа) настроены")
