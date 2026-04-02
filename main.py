@@ -863,25 +863,29 @@ async def bot_runner(*, mode: str = "auto") -> None:
         # Обработчик ошибок
         application.add_error_handler(error_handler)
 
-        await application.initialize()
-        await application.start()
-
         base = _webhook_base_url()
         use_webhook = (mode == "webhook") or (mode == "auto" and base is not None)
 
+        # ВАЖНО: webhook и polling нельзя смешивать — иначе получим 409 Conflict.
+        if not use_webhook:
+            # Polling mode: сначала гарантированно гасим webhook, потом стартуем polling.
+            try:
+                await application.bot.delete_webhook(drop_pending_updates=True)
+            except Exception as e:
+                logger.warning("delete_webhook failed (continuing): %s", e)
+
+        await application.initialize()
+        await application.start()
+
         if use_webhook:
-            # Webhook mode: Telegram будет дергать наш /tg-webhook endpoint
+            if not base:
+                raise RuntimeError("Webhook mode requested but WEBHOOK_BASE_URL/RENDER_EXTERNAL_URL is not set.")
             try:
                 await application.bot.set_webhook(url=f"{base}/tg-webhook", drop_pending_updates=True)
             except Exception as e:
                 logger.error("set_webhook failed: %s", e)
                 raise
         else:
-            # Polling mode (local): важно очистить webhook, иначе будет 409 Conflict.
-            try:
-                await application.bot.delete_webhook(drop_pending_updates=True)
-            except Exception as e:
-                logger.warning("delete_webhook failed (continuing): %s", e)
             await application.updater.start_polling()
 
         logger.info("🤖 Бот запущен! Создан Вадимом (vadzim.by)")
@@ -937,7 +941,8 @@ async def main_entry():
     Важно: ошибка/завершение bot_runner() не должна останавливать HTTP-сервер.
     """
     scheduler_task = asyncio.create_task(run_forever())
-    bot_task = asyncio.create_task(bot_runner(mode="auto"))
+    bot_mode = (os.getenv("BOT_MODE") or "auto").strip().lower()
+    bot_task = asyncio.create_task(bot_runner(mode=bot_mode))
 
     app = web.Application()
     app.router.add_get("/", health_handler)
