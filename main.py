@@ -932,6 +932,30 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
         logger.error("webhook update decode failed: %s", e)
         return web.Response(status=400, text="Bad update")
 
+    # Трассировка: чтобы увидеть ВСЕ входящие апдейты (сообщения/кнопки/команды).
+    try:
+        u = update
+        if getattr(u, "message", None) and u.message:
+            m = u.message
+            logger.info(
+                "WEBHOOK update: message chat_id=%s user_id=%s text=%r",
+                getattr(m.chat, "id", None),
+                getattr(m.from_user, "id", None),
+                (m.text or "")[:200],
+            )
+        elif getattr(u, "callback_query", None) and u.callback_query:
+            cq = u.callback_query
+            logger.info(
+                "WEBHOOK update: callback user_id=%s chat_id=%s data=%r",
+                getattr(getattr(cq, "from_user", None), "id", None),
+                getattr(getattr(getattr(cq, "message", None), "chat", None), "id", None),
+                (cq.data or "")[:200],
+            )
+        else:
+            logger.info("WEBHOOK update: type=%s keys=%s", type(u).__name__, list((data or {}).keys())[:20])
+    except Exception as e:
+        logger.warning("WEBHOOK trace failed: %s", e)
+
     # В webhook-режиме мы не используем updater.start_webhook из PTB,
     # поэтому обрабатываем update напрямую.
     async def _run() -> None:
