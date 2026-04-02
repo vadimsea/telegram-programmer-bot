@@ -889,52 +889,8 @@ async def bot_runner(*, mode: str = "auto") -> None:
 
         await application.initialize()
         await application.start()
-
-        # В webhook-режиме Updater не стартует, поэтому делаем свой consumer очереди апдейтов.
-        # Важно: при рестартах Render может создаваться новый Application — старый consumer нужно отменять.
-        global _tg_consumer_task
-        if _tg_consumer_task is not None and not _tg_consumer_task.done():
-            try:
-                _tg_consumer_task.cancel()
-            except Exception:
-                pass
-            try:
-                await _tg_consumer_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-
-        if True:
-            async def _consume_updates() -> None:
-                logger.info("update_consumer started (mode=%s)", mode)
-                try:
-                    while True:
-                        u = await application.update_queue.get()
-                        try:
-                            logger.info("update_consumer got update: %s", type(u).__name__)
-                            logger.info("update_consumer process_update start")
-                            try:
-                                await asyncio.wait_for(application.process_update(u), timeout=15)
-                            except asyncio.TimeoutError:
-                                logger.error("update_consumer process_update TIMEOUT (15s) — skipping update")
-                            logger.info("update_consumer process_update end")
-                        except Exception as e:
-                            logger.error("update_consumer process_update failed: %s", e, exc_info=e)
-                        finally:
-                            try:
-                                application.update_queue.task_done()
-                            except Exception:
-                                pass
-                except asyncio.CancelledError:
-                    logger.info("update_consumer cancelled")
-                    raise
-                except Exception as e:
-                    logger.error("update_consumer crashed: %s", e, exc_info=e)
-                    raise
-
-            # Важно привязать таск к PTB Application, чтобы он не терялся.
-            _tg_consumer_task = application.create_task(_consume_updates(), name="tg-update-consumer")
+        # NOTE: webhook updates обрабатываем прямо в HTTP handler (см. tg_webhook_handler).
+        # Отдельный consumer очереди убран, т.к. он может зависнуть на одном апдейте и стопорить весь поток.
 
         if use_webhook:
             if not base:
@@ -1015,17 +971,14 @@ async def tg_webhook_handler(request: web.Request) -> web.Response:
     except Exception as e:
         logger.warning("WEBHOOK trace failed: %s", e)
 
-    # Кладём update в очередь — его обработает consumer (см. bot_runner).
+    # Обрабатываем update синхронно (с таймаутом), чтобы ни один апдейт не мог повесить очередь.
     try:
-        await _tg_app.update_queue.put(update)
-        try:
-            qsize = _tg_app.update_queue.qsize()
-        except Exception:
-            qsize = -1
-        logger.info("webhook enqueued update (qsize=%s)", qsize)
+        await asyncio.wait_for(_tg_app.process_update(update), timeout=10)
+    except asyncio.TimeoutError:
+        logger.error("webhook process_update TIMEOUT (10s) — skipping update")
     except Exception as e:
-        logger.error("webhook enqueue failed: %s", e, exc_info=e)
-        return web.Response(status=500, text="Enqueue failed")
+        logger.error("webhook process_update failed: %s", e, exc_info=e)
+        # Всё равно отвечаем 200, чтобы Telegram не ретраил бесконечно.
     return web.Response(text="OK")
 
 
