@@ -434,9 +434,13 @@ class CourseHandler:
         L = get_lesson(lesson_id)
         badge = L.get("progress_badge")
         opening = L.get("opening")
-        head = f"📌 <b>{L['title']}</b> <code>({lesson_id})</code>"
+        # Заголовок экранируем: "Кнопка <button>" → "Кнопка &lt;button&gt;"
+        safe_title = html.escape(str(L.get("title", lesson_id)), quote=False)
+        safe_lid = html.escape(lesson_id, quote=False)
+        head = f"📌 <b>{safe_title}</b> <code>({safe_lid})</code>"
         if badge:
-            head = f"📍 <b>{badge}</b>\n{head}"
+            safe_badge = html.escape(str(badge), quote=False)
+            head = f"📍 <b>{safe_badge}</b>\n{head}"
         blocks = [head]
         if opening:
             blocks.append(opening)
