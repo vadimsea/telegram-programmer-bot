@@ -190,7 +190,7 @@ class UserProgressManager:
     def complete_lesson(self, user_id: int, lesson_id: str) -> bool:
         """
         Закрыть урок: только если lesson_id совпадает с active.
-        Увеличивает cursor, снимает active.
+        Увеличивает cursor, снимает active. Обновляет streak.
         """
         data = self.get_user_progress(user_id)
         active = data.get("active_lesson_id")
@@ -205,8 +205,62 @@ class UserProgressManager:
         data["expects_code_for"] = None
         data["expects_mentor_for"] = None
         data["last_activity"] = datetime.now().isoformat()
+        self._update_streak(data)
         self.save_progress()
         return True
+
+    def _update_streak(self, data: Dict[str, Any]) -> None:
+        """Обновить streak_days на основе даты последнего завершённого урока."""
+        today = datetime.now().date()
+        today_str = today.isoformat()
+        last_str = data.get("last_completed_date")
+        streak = int(data.get("streak_days", 0))
+
+        if last_str == today_str:
+            # Уже засчитан сегодня — не изменяем
+            pass
+        elif last_str == (today - timedelta(days=1)).isoformat():
+            # Вчера был урок — продолжаем серию
+            streak += 1
+        else:
+            # Пропуск или первый раз — сбрасываем
+            streak = 1
+
+        data["streak_days"] = streak
+        data["last_completed_date"] = today_str
+        data["streak_updated_at"] = datetime.now().isoformat()
+
+    def get_streak(self, user_id: int) -> int:
+        """Текущий стрик пользователя в днях."""
+        data = self.get_user_progress(user_id)
+        # Если последний урок был давно — стрик сброшен
+        last_str = data.get("last_completed_date")
+        if not last_str:
+            return 0
+        try:
+            last_date = datetime.fromisoformat(last_str).date()
+        except (ValueError, TypeError):
+            return 0
+        today = datetime.now().date()
+        if (today - last_date).days > 1:
+            return 0
+        return int(data.get("streak_days", 0))
+
+    def is_streak_milestone(self, streak: int) -> Optional[str]:
+        """Вернуть уровень стрика если это веха, иначе None."""
+        if streak == 3:
+            return "fire"
+        if streak == 7:
+            return "week"
+        if streak == 14:
+            return "twoweeks"
+        if streak == 21:
+            return "threeweeks"
+        if streak == 30:
+            return "month"
+        if streak > 30 and streak % 10 == 0:
+            return "epic"
+        return None
 
     def set_pending_homework(self, user_id: int, lesson_id: str) -> None:
         """Явно назначить активный урок (уже открыт) — для согласованности API."""

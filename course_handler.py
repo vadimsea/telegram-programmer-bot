@@ -6,6 +6,7 @@ Inline-кнопки под уроком не удаляются — новые �
 import html
 import logging
 import os
+import random
 import re
 from datetime import datetime
 from typing import Literal, Optional
@@ -509,27 +510,89 @@ class CourseHandler:
             logger.exception("send_lesson_dm unexpected: %s", e)
             return False
 
-    async def announce_group(self, display_name: str, lesson_id: str, kind: str) -> None:
+    # 20 мотивирующих сообщений о завершении урока
+    _DONE_MESSAGES = [
+        "{name} закрыл(а) урок <b>{title}</b> 🔥 Продолжает набирать темп.",
+        "{name} разобрался(ась) с <b>{title}</b> ✅ Вот это движение!",
+        "{name} прошёл(а) <b>{title}</b>. Тихо, но уверенно идёт к цели 💪",
+        "Ещё один урок в копилку! <b>{title}</b> закрыт {name} 🎯",
+        "{name} только что сдал(а) <b>{title}</b>. Так и пишутся навыки — урок за уроком.",
+        "🏅 {name} отметил(а) галкой <b>{title}</b>. Курс становится короче.",
+        "{name} разложил(а) по полочкам <b>{title}</b> 🧠 Уважение.",
+        "💡 {name} закрыл(а) <b>{title}</b>. Знание — уже в голове, осталось закрепить.",
+        "{name} справился(ась) с <b>{title}</b> — и это заметно 🚀",
+        "⚡ Быстро и чётко: {name} закрыл(а) <b>{title}</b>.",
+        "{name} прошёл(а) <b>{title}</b>. Каждый урок — шаг ближе к Junior.",
+        "🎉 <b>{title}</b> пройден! {name} не останавливается.",
+        "{name} одолел(а) <b>{title}</b>. Ментор доволен 😎",
+        "📌 Готово: {name} закрыл(а) <b>{title}</b>. Прогресс реален.",
+        "{name} и <b>{title}</b> — это уже история. Дальше!",
+        "🌟 {name} сдал(а) <b>{title}</b>. Последовательность бьёт мотивацию.",
+        "{name} разобрал(а) <b>{title}</b> без лишних слов 💎",
+        "🔑 {name} открыл(а) для себя <b>{title}</b>. Это останется надолго.",
+        "{name} — ещё один урок позади: <b>{title}</b> ✔️ Продолжай!",
+        "📈 {name} движется вперёд. <b>{title}</b> теперь в багаже.",
+    ]
+
+    # Сообщения при открытии урока
+    _OPENED_MESSAGES = [
+        "🔥 {name} взялся(ась) за <b>{title}</b>. Кто следующий?",
+        "📖 {name} открыл(а) урок <b>{title}</b>. Поехали!",
+        "⚡ {name} уже изучает <b>{title}</b>. Жми «Начать» — не отставай!",
+        "{name} стартовал(а) с <b>{title}</b> 🚀 Вдохновляет!",
+        "💪 {name} в деле: <b>{title}</b>. Присоединяйся!",
+    ]
+
+    async def announce_group(
+        self,
+        display_name: str,
+        lesson_id: str,
+        kind: str,
+        streak: int = 0,
+    ) -> None:
         if not self.bot or not CHAT_ID:
             return
         L = get_lesson(lesson_id)
         safe = html.escape(display_name or "Участник")
+        safe_title = html.escape(str(L.get("title", lesson_id)), quote=False)
+
         if kind == "opened":
-            text = (
-                f"🔥 {safe} начал(а) урок: <b>{html.escape(L['title'])}</b>.\n"
-                f"Кто ещё в деле — жми «Начать или продолжить» в закрепе."
-            )
+            tpl = random.choice(self._OPENED_MESSAGES)
+            text = tpl.format(name=safe, title=safe_title)
+            text += f"\nКто ещё в деле — жми «▶️ Начать или продолжить» в закрепе."
         elif kind == "done":
-            text = (
-                f"✅ {safe} закрыл(а) <b>{html.escape(L['title'])}</b> — красота.\n"
-                f"Следующий урок уже жмёт в боте."
-            )
+            tpl = random.choice(self._DONE_MESSAGES)
+            text = tpl.format(name=safe, title=safe_title)
+            if streak >= 3:
+                text += f"\n🔥 Стрик: <b>{streak} дней подряд</b>!"
         else:
-            text = f"{safe} двигается по курсу: {html.escape(L['title'])} ⚡"
+            text = f"{safe} двигается по курсу: <b>{safe_title}</b> ⚡"
+
         try:
             await self.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
         except TelegramError as e:
             logger.warning("announce_group: %s", e)
+
+    async def announce_streak_milestone(
+        self, display_name: str, streak: int, milestone: str
+    ) -> None:
+        """Отдельное сообщение в группу при достижении стрик-вехи."""
+        if not self.bot or not CHAT_ID:
+            return
+        safe = html.escape(display_name or "Участник")
+        milestone_texts = {
+            "fire":       f"🔥 <b>{safe}</b> учится 3 дня подряд! Огонь не гаснет.",
+            "week":       f"⚡ <b>{safe}</b> — 7 дней без пропусков! Неделя стрика — это серьёзно.",
+            "twoweeks":   f"🏆 <b>{safe}</b> держит стрик 14 дней! Привычка сформирована.",
+            "threeweeks": f"💎 <b>{safe}</b> — 21 день подряд! Это уже образ жизни.",
+            "month":      f"👑 <b>{safe}</b> учится 30 дней подряд! Легенда группы.",
+            "epic":       f"🌟 <b>{safe}</b> — {streak} дней стрика! Это просто невероятно.",
+        }
+        text = milestone_texts.get(milestone, f"🔥 {safe} — {streak} дней стрика!")
+        try:
+            await self.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+        except TelegramError as e:
+            logger.warning("announce_streak_milestone: %s", e)
 
     async def send_welcome_message(self, chat_id: str) -> bool:
         if not self.bot:
@@ -808,8 +871,15 @@ async def _finalize_lesson(
         )
         return False
 
+    # Стрик после complete_lesson (данные уже обновлены)
+    streak = progress_manager.get_streak(user_id)
+    milestone = progress_manager.is_streak_milestone(streak)
+
     if announce_done:
-        await course_handler.announce_group(display_name, lesson_id, "done")
+        await course_handler.announce_group(display_name, lesson_id, "done", streak=streak)
+    if milestone:
+        await course_handler.announce_streak_milestone(display_name, streak, milestone)
+
     if not course_handler.bot:
         return True
 
@@ -823,6 +893,25 @@ async def _finalize_lesson(
             )
         except TelegramError as e:
             logger.warning("_finalize_lesson win_message: %s", e)
+
+    # Стрик-уведомление в ЛС
+    if streak >= 3 and milestone and course_handler.bot:
+        streak_texts = {
+            "fire":       f"🔥 <b>3 дня подряд!</b> Стрик пошёл — не останавливайся.",
+            "week":       f"⚡ <b>7 дней подряд!</b> Недельная серия — ты машина.",
+            "twoweeks":   f"🏆 <b>14 дней подряд!</b> Две недели без пропусков. Это сила.",
+            "threeweeks": f"💎 <b>21 день подряд!</b> Три недели — привычка сформирована навсегда.",
+            "month":      f"👑 <b>30 дней подряд!</b> Месяц без пропусков. Легенда.",
+            "epic":       f"🌟 <b>{streak} дней подряд!</b> Ты феномен этого курса.",
+        }
+        streak_dm = streak_texts.get(milestone)
+        if streak_dm:
+            try:
+                await course_handler.bot.send_message(
+                    chat_id=user_id, text=streak_dm, parse_mode="HTML"
+                )
+            except TelegramError as e:
+                logger.warning("_finalize_lesson streak DM: %s", e)
     done_n = len(progress_manager.get_user_progress(user_id).get("completed_lesson_ids") or [])
     if done_n == 3:
         try:
