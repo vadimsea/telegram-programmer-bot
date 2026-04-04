@@ -2969,7 +2969,7 @@ LESSONS: Dict[str, Dict[str, Any]] = {
             "Добавление в массив и повторный рендер",
             "Очистка input после добавления",
         ],
-        "hint": "function render() { ul.innerHTML = todos.map(t => `<li>${t.title}</li>`).join(''); }",
+        "hint": "<code>function render() { ul.innerHTML = todos.map(t =&gt; `&lt;li&gt;${t.title}&lt;/li&gt;`).join(''); }</code>",
         "quiz_done_line": (
             "Рендер из данных и форма — собери динамический список. Потом зачёт."
         ),
@@ -3357,13 +3357,13 @@ LESSONS: Dict[str, Dict[str, Any]] = {
         "task": (
             "Раздели проект на 3 файла: api.js (fetchPosts — named export), "
             "render.js (renderList — named export, шаблон), main.js (импортирует оба, запускает). "
-            "<script type=\"module\"> в HTML. Локальный сервер или Live Server."
+            "<code>&lt;script type=\"module\"&gt;</code> в HTML. Локальный сервер или Live Server."
         ),
         "checklist": [
             "api.js с named export функции fetchPosts",
             "render.js с named export renderList",
             "main.js импортирует из обоих файлов",
-            "script type=\"module\" в HTML",
+            "script type module в HTML",
         ],
         "hint": "Используй VS Code расширение Live Server (правая кнопка → Open with Live Server).",
         "quiz_done_line": (

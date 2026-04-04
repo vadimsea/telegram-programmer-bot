@@ -1089,7 +1089,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             progress_manager.clear_expects_mentor(user_id)
             hint = get_lesson(lesson_id).get("hint", "Подумай ещё раз над формулировкой задания.")
-            await query.message.reply_text(f"💡 {hint}", reply_markup=build_lesson_keyboard(lesson_id))
+            await query.message.reply_text(
+                f"💡 {hint}",
+                reply_markup=build_lesson_keyboard(lesson_id),
+                parse_mode="HTML",
+            )
             return
 
         if data.startswith("codehelp_"):
