@@ -957,12 +957,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(err)
             return
 
+        if data.startswith("hw_done_confirm_"):
+            lesson_id = data[len("hw_done_confirm_"):]
+            if lesson_id != progress_manager.get_active_lesson_id(user_id):
+                await query.message.reply_text("Это не активный урок. Открой актуальный из /next.")
+                return
+            await _finalize_lesson(user_id, name, lesson_id)
+            return
+
         if data.startswith("hw_done_"):
             lesson_id = data[8:]
             if lesson_id != progress_manager.get_active_lesson_id(user_id):
                 await query.message.reply_text("Это не активный урок. Открой актуальный из /next.")
                 return
-            await _finalize_lesson(user_id, name, lesson_id)
+            confirm_kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Да, засчитать", callback_data=f"hw_done_confirm_{lesson_id}"),
+                    InlineKeyboardButton("💬 Сначала отправлю код", callback_data=f"codehelp_{lesson_id}"),
+                ],
+            ])
+            await query.message.reply_text(
+                "🤔 Ты точно выполнил задание?\n\n"
+                "Лучший способ закрепить материал — отправить код на проверку. "
+                "Но если уже сделал в редакторе и не хочешь копировать — засчитаем так.",
+                reply_markup=confirm_kb,
+            )
             return
 
         if data.startswith("hint_"):
