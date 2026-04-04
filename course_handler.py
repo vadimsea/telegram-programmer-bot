@@ -131,12 +131,9 @@ def get_mentor_forward_chat_id() -> Optional[int]:
 
 
 def build_lesson_keyboard(lesson_id: str, include_next: bool = False) -> InlineKeyboardMarkup:
-    """Основной путь — практика (код); квиз — быстрая проверка; «Я сделал» — fallback."""
+    """Два пути закрыть урок: отправить код (AI-ревью) или пройти быстрый тест (квиз)."""
     rows = [
-        [
-            InlineKeyboardButton("💬 Отправить код", callback_data=f"codehelp_{lesson_id}"),
-            InlineKeyboardButton("✅ Я сделал", callback_data=f"hw_done_{lesson_id}"),
-        ],
+        [InlineKeyboardButton("💬 Отправить код", callback_data=f"codehelp_{lesson_id}")],
         [InlineKeyboardButton("⚡ Быстрый тест", callback_data=f"theoryquiz_{lesson_id}")],
         [InlineKeyboardButton("💡 Подсказка", callback_data=f"hint_{lesson_id}")],
         [
@@ -458,7 +455,7 @@ class CourseHandler:
             f"📖 <b>Теория</b>\n{L['theory']}\n\n"
             f"⚡ <b>Нюанс</b>\n{L['nuance']}\n\n"
             f"🛠 <b>Задание</b>\n{L['task']}\n\n"
-            "Снизу: <b>практика</b> (код) и быстрый тест; «✅ Я сделал» — если уже готово."
+            "Снизу: <b>отправь код</b> на проверку или пройди <b>быстрый тест</b> — урок зачтётся автоматически."
         )
         if lesson_id == LESSON_ORDER[-1]:
             body += (
@@ -829,7 +826,7 @@ async def deliver_next_lesson(
     if not progress_manager.can_open_next_lesson(user_id, total):
         active = progress_manager.get_active_lesson_id(user_id)
         if active:
-            return False, "Сначала закрой текущий урок: «✅ Я сделал» или пришли код на проверку."
+            return False, "Сначала закрой текущий урок: отправь код или пройди быстрый тест."
         return False, "Ты уже прошёл все уроки этого блока 🎉"
     cur = progress_manager.get_cursor(user_id)
     lesson_id = LESSON_ORDER[cur]
@@ -1055,31 +1052,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.message.reply_text(err)
             return
 
-        if data.startswith("hw_done_confirm_"):
-            lesson_id = data[len("hw_done_confirm_"):]
-            if lesson_id != progress_manager.get_active_lesson_id(user_id):
-                await query.message.reply_text("Это не активный урок. Открой актуальный из /next.")
-                return
-            await _finalize_lesson(user_id, name, lesson_id)
+        if data.startswith("hw_done_confirm_") or data.startswith("hw_done_"):
+            await query.answer("Эта кнопка больше не работает. Отправь код или пройди быстрый тест.", show_alert=True)
             return
-
-        if data.startswith("hw_done_"):
-            lesson_id = data[8:]
-            if lesson_id != progress_manager.get_active_lesson_id(user_id):
-                await query.message.reply_text("Это не активный урок. Открой актуальный из /next.")
-                return
-            confirm_kb = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Да, засчитать", callback_data=f"hw_done_confirm_{lesson_id}"),
-                    InlineKeyboardButton("💬 Сначала отправлю код", callback_data=f"codehelp_{lesson_id}"),
-                ],
-            ])
-            await query.message.reply_text(
-                "🤔 Ты точно выполнил задание?\n\n"
-                "Лучший способ закрепить материал — отправить код на проверку. "
-                "Но если уже сделал в редакторе и не хочешь копировать — засчитаем так.",
-                reply_markup=confirm_kb,
-            )
             return
 
         if data.startswith("hint_"):

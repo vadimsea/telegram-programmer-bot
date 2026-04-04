@@ -46,7 +46,7 @@ def _parse_submission_review(raw: str) -> Tuple[str, str]:
     """Первая строка — OK|ERROR, остальное — feedback для пользователя."""
     text = (raw or "").strip()
     if not text:
-        return "ERROR", "Пустой ответ проверки. Попробуй ещё раз или нажми «✅ Я сделал»."
+        return "ERROR", "Пустой ответ проверки. Попробуй отправить код ещё раз."
     if "\n" in text:
         first, rest = text.split("\n", 1)
     else:
@@ -1241,8 +1241,7 @@ class EnhancedAIHandler:
             return {
                 "status": "ERROR",
                 "feedback": (
-                    "Проверка временно недоступна. Если уверен в задании — нажми «✅ Я сделал»; "
-                    "иначе попробуй прислать код чуть позже."
+                    "Проверка временно недоступна. Попробуй прислать код чуть позже или пройди быстрый тест."
                 ),
             }
 
@@ -1271,7 +1270,7 @@ class EnhancedAIHandler:
             logger.error("review_submission: %s", exc, exc_info=True)
             return {
                 "status": "ERROR",
-                "feedback": "Сервис проверки перегружен. Попробуй через минуту или нажми «✅ Я сделал».",
+                "feedback": "Сервис проверки перегружен. Попробуй через минуту или пройди быстрый тест.",
             }
 
 
