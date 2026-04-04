@@ -312,70 +312,81 @@ class EnhancedAIHandler:
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
+    # Триггеры, которые совпадают только с коротким сообщением (≤ слов в триггере + 1).
+    # Если пользователь написал "не работает fetch" — это техвопрос, а не small-talk.
+    _PROBLEM_TRIGGERS = frozenset({
+        "не работает", "сломалось", "не запускается", "ошибка", "баг", "падает",
+        "у меня баг", "вылетает",
+    })
+
+    # Технические слова, означающие что сообщение — реальный вопрос, а не small talk.
+    _TECH_WORDS = frozenset({
+        "fetch", "promise", "async", "await", "css", "html", "js", "javascript",
+        "python", "react", "node", "api", "dom", "flex", "grid", "function",
+        "class", "import", "export", "const", "let", "var", "def", "return",
+        "console", "error", "typeerror", "syntaxerror", "uncaught", "undefined",
+        "null", "nan", "http", "cors", "json", "git", "npm", "webpack", "vite",
+        "django", "flask", "fastapi", "sql", "database", "sql", "docker",
+        "render", "deploy", "heroku", "vercel", "lambda", "event", "callback",
+        "selector", "property", "attribute", "margin", "padding", "display",
+        "overflow", "position", "z-index", "border", "animation", "transition",
+    })
+
     def _match_small_talk(self, message_lower: str) -> Optional[str]:
         trimmed = message_lower.strip()
         if not trimmed:
             return None
 
-        # Сначала проверяем small talk пресеты БЕЗ учета знаков препинания
-        # Это позволяет распознавать "как дела?" так же как "как дела"
         trimmed_for_check = trimmed.rstrip('?.,!')
-        
+        words = trimmed_for_check.split()
+
+        # Если сообщение содержит явные технические слова — сразу в Groq.
+        if any(w in self._TECH_WORDS for w in words):
+            return None
+
+        # Технические intent-фразы — сразу в Groq (проверяем ДО пресетов).
+        intent_keywords = (
+            "что такое", "кто такой", "как создать", "как сделать",
+            "как написать", "как использовать", "зачем нужен", "почему не работает",
+            "передай", "расскажи про", "скажи про", "подскажи как",
+            "напиши код", "сделай программу", "создай", "объясни код",
+            "о программировании", "про python", "про javascript",
+        )
+        if any(kw in trimmed_for_check for kw in intent_keywords):
+            return None
+
         for preset in self.SMALL_TALK_PRESETS:
             for trigger in preset["triggers"]:
-                # Проверяем как точное совпадение, так и вхождение в текст
-                if trigger == trimmed_for_check or trigger in trimmed_for_check:
-                    return random.choice(preset["responses"])
+                is_exact = trigger == trimmed_for_check
+                is_substr = trigger in trimmed_for_check
 
-        # Если это не small talk, но содержит "?", это может быть вопрос
-        # Простые small talk вопросы уже обработаны выше
+                if not is_exact and not is_substr:
+                    continue
+
+                # Для «проблемных» триггеров ("не работает", "ошибка" и т.п.)
+                # применяем только точное совпадение или совпадение с коротким
+                # сообщением (не длиннее trigger + 1 слово).
+                if trigger in self._PROBLEM_TRIGGERS and not is_exact:
+                    trigger_len = len(trigger.split())
+                    if len(words) > trigger_len + 1:
+                        continue
+
+                return random.choice(preset["responses"])
+
+        # Простые вопросы со знаком "?" — проверяем отдельно.
         if "?" in trimmed:
-            # Проверяем, не является ли это простым small talk вопросом
-            simple_questions = ("как дела", "как жизнь", "как ты", "как настроение", 
-                              "что делаешь", "чем занимаешься", "что нового", "какие новости")
-            trimmed_no_punct = trimmed.rstrip('?.,!').strip()
-            
-            # Проверяем каждый простой вопрос
+            simple_questions = (
+                "как дела", "как жизнь", "как ты", "как настроение",
+                "что делаешь", "чем занимаешься", "что нового", "какие новости",
+            )
+            trimmed_no_punct = trimmed_for_check.strip()
             for q in simple_questions:
                 if q in trimmed_no_punct or trimmed_no_punct == q:
-                    # Нашли простой small talk вопрос - ищем соответствующий пресет
                     for preset in self.SMALL_TALK_PRESETS:
                         for trigger in preset["triggers"]:
                             if q in trigger or trigger in q:
                                 return random.choice(preset["responses"])
-                    # Если не нашли точный пресет, возвращаем общий friendly ответ
                     return "Всё отлично! 😊 Готов помочь с программированием. Что у тебя на уме?"
-            
-            # Если это технический вопрос с "?", пропускаем small talk
-            return None
-
-        # Проверяем на технические ключевые слова только если это не small talk
-        intent_keywords = (
-            "что такое",
-            "кто такой",
-            "как создать",
-            "как сделать",
-            "как написать",
-            "как использовать",
-            "зачем нужен",
-            "почему не работает",
-            "передай",
-            "расскажи про",
-            "скажи про",
-            "подскажи как",
-            "напиши код",
-            "сделай программу",
-            "создай",
-            "игру",
-            "объясни код",
-            "о программировании",
-            "про python",
-            "про javascript",
-        )
-        
-        # Проверяем только если есть технические ключевые слова
-        if any(keyword in trimmed for keyword in intent_keywords):
-            return None
 
         return None
 
@@ -540,7 +551,8 @@ class EnhancedAIHandler:
                 tone = self._detect_message_tone(message_lower)
                 if tone:
                     small_talk_reply = self._augment_with_tone(small_talk_reply, tone)
-                return small_talk_reply, False
+                # is_fallback=True: small-talk не кешируется (ответы случайны, у каждого свой)
+                return small_talk_reply, True
 
             quick_responses = self._get_personalized_quick_responses(skill_level, preferences)
             follow_up_keywords = ("подробнее", "детальнее", "поподробнее", "ещё", "еще", "расскажи больше", "расскажи подробнее", "больше информации", "tell me more", "more detail")
@@ -858,9 +870,38 @@ class EnhancedAIHandler:
         return response
 
     def _analyze_python_errors(self, code: str) -> str:
+        errors = []
+        suggestions = []
+
+        # Базовые проверки без запуска интерпретатора
+        lines = code.split("\n")
+        for i, line in enumerate(lines, 1):
+            stripped = line.rstrip()
+            # Функции/классы без двоеточия
+            if re.match(r"^\s*(def |class )\w+.*[^:]$", stripped):
+                errors.append(f"❌ Строка {i}: возможно пропущено `:` в конце def/class")
+            # print без скобок (Python 2 стиль)
+            if re.match(r"^\s*print\s+[^\(]", stripped):
+                errors.append(f"❌ Строка {i}: `print` без скобок — это Python 2, используй `print(...)`")
+            # = вместо == в условии
+            if re.search(r"\bif\b.*[^=!<>]=[^=]", stripped) and "==" not in stripped:
+                errors.append(f"⚠️ Строка {i}: возможно `=` вместо `==` в условии")
+
+        if "except:" in code and "except Exception" not in code:
+            suggestions.append("💡 Используй `except Exception as e:` вместо голого `except:` — так проще отлаживать")
+        if "\t" in code and "    " in code:
+            suggestions.append("💡 Смешаны табы и пробелы — выбери одно (PEP 8 рекомендует 4 пробела)")
+        if re.search(r"l\s*=\s*\[\].*\nfor.*:\n.*l\.append", code, re.MULTILINE):
+            suggestions.append("💡 Можно заменить цикл с append на list comprehension")
+
         response = "🔍 **Анализ Python кода:**\n\n"
         response += f"\`\`\`python\n{code}\n\`\`\`\n\n"
-        response += "✅ Код выглядит корректно для Python"
+        if errors:
+            response += "🚨 **Найденные проблемы:**\n" + "\n".join(errors) + "\n\n"
+        if suggestions:
+            response += "💡 **Рекомендации:**\n" + "\n".join(suggestions) + "\n\n"
+        if not errors and not suggestions:
+            response += "✅ Явных проблем не найдено. Для глубокого анализа отправь код через `объясни этот код`."
         return response
 
     async def _get_learning_advice(self, message: str) -> str:
