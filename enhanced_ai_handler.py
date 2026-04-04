@@ -552,8 +552,8 @@ class EnhancedAIHandler:
             if not message_lower:
                 return "Напиши вопрос или вставь код — отвечу!", True
 
-            # Early truncation to keep answers compact
-            max_rows = 10
+            # Обрезаем только очень длинные сообщения — код должен доходить до Groq целиком
+            max_rows = 60
             lines = message.splitlines()
             if len(lines) > max_rows:
                 message = "\n".join(lines[:max_rows]) + "\n…"
@@ -701,15 +701,31 @@ class EnhancedAIHandler:
                 return calc_example, False
 
             if "найди ошибку" in message_lower or "find error" in message_lower:
-                analysis = await self._analyze_code_for_errors(message)
-                return analysis, False
+                if self.groq_client:
+                    # Groq делает реальный анализ — просто передаём в него с нужным режимом
+                    mode = "debug_code"
+                else:
+                    # Groq недоступен — используем статический анализ как запасной вариант
+                    analysis = await self._analyze_code_for_errors(message)
+                    return analysis, True
 
-            if any(phrase in message_lower for phrase in
-                   ["с чего начать", "как начать", "начать учить", "начать изучать"]):
-                advice = await self._get_learning_advice(message)
-                return advice, False
+            elif any(phrase in message_lower for phrase in
+                     ["с чего начать", "как начать", "начать учить", "начать изучать"]):
+                if self.groq_client:
+                    mode = "general"
+                else:
+                    advice = self._get_learning_advice_static()
+                    return advice, True
 
-            if "оптимизируй" in message_lower or "optimize" in message_lower:
+            elif "объясни этот код" in message_lower or "что делает этот код" in message_lower \
+                    or "проанализируй этот код" in message_lower or "analyze this code" in message_lower:
+                if self.groq_client:
+                    mode = "explain_concept"
+                else:
+                    explanation = await self.explain_code(message)
+                    return explanation, True
+
+            elif "оптимизируй" in message_lower or "optimize" in message_lower:
                 mode = "optimize_code"
             elif "объясни" in message_lower or "explain" in message_lower:
                 mode = "explain_concept"
@@ -721,14 +737,6 @@ class EnhancedAIHandler:
                 mode = "analyze_code"
             else:
                 mode = "general"
-
-            if "объясни этот код" in message_lower or "что делает этот код" in message_lower:
-                explanation = await self.explain_code(message)
-                return explanation, False
-
-            if "проанализируй этот код" in message_lower or "analyze this code" in message_lower:
-                explanation = await self.explain_code(message)
-                return explanation, False
 
             # === Обращение к Groq API ===
             if not self.groq_client:
@@ -859,15 +867,27 @@ class EnhancedAIHandler:
                 "<code>```js\nкод здесь\n```</code>"
             )
 
-        # Определяем язык
-        if any(keyword in code.lower() for keyword in ['let', 'const', 'var', 'console.log', 'for(']):
+        # Groq недоступен — используем базовую статическую проверку
+        if any(kw in code.lower() for kw in ['let', 'const', 'var', 'console.log', 'for(']):
             return self._analyze_javascript_errors(code)
-        elif any(keyword in code for keyword in ['def ', 'print(', 'import ', 'for ']):
+        elif any(kw in code for kw in ['def ', 'print(', 'import ', 'for ']):
             return self._analyze_python_errors(code)
         elif "<div" in code.lower() or "<html" in code.lower() or "<h1>" in code.lower():
-            return f"🔍 **Анализ HTML кода:**\n\n\`\`\`html\n{code}\n\`\`\`\n\n⚠️ Ошибка: у `<div>` отсутствует закрывающий символ `>`.\n✅ Добавьте его: `<div class=\"container\">`"
+            return (
+                "🔍 <b>HTML-код получен.</b>\n\n"
+                "ИИ-анализ временно недоступен. Проверь вручную:\n"
+                "• Все ли теги закрыты? (<code>&lt;div&gt;</code> → <code>&lt;/div&gt;</code>)\n"
+                "• Есть ли <code>&lt;!DOCTYPE html&gt;</code> в начале?\n"
+                "• Правильная вложенность тегов?\n\n"
+                "Попробуй снова чуть позже — тогда получишь полный AI-разбор."
+            )
         else:
-            return f"🔍 **Анализ кода:**\n\n\`\`\`\n{code}\n\`\`\`\n\n❓ Не могу определить язык программирования. Укажите язык для более точного анализа."
+            return (
+                "🔍 Не могу определить язык. Укажи явно:\n"
+                "<code>найди ошибку в js-коде: ...</code>\n"
+                "или оберни код в тройные бэктики с указанием языка:\n"
+                "<code>```js\n...\n```</code>"
+            )
 
     def _analyze_javascript_errors(self, code: str) -> str:
         errors = []
@@ -883,23 +903,23 @@ class EnhancedAIHandler:
                 if any(keyword in line for keyword in ['console.log', 'let ', 'const ', 'var ']):
                     suggestions.append("💡 Добавьте точки с запятой в конце строк")
                     break
-        response = "🔍 **Анализ JavaScript кода:**\n\n"
-        response += f"\`\`\`javascript\n{code}\n\`\`\`\n\n"
+        response = "🔍 <b>Анализ JavaScript кода (базовая проверка):</b>\n\n"
+        response += "```javascript\n" + code + "\n```\n\n"
         if errors:
-            response += "🚨 **Найденные ошибки:**\n"
+            response += "🚨 <b>Найденные ошибки:</b>\n"
             for error in errors:
                 response += f"{error}\n"
             response += "\n"
         if suggestions:
-            response += "💡 **Рекомендации:**\n"
+            response += "💡 <b>Рекомендации:</b>\n"
             for suggestion in suggestions:
                 response += f"{suggestion}\n"
             response += "\n"
         fixed_code = code
         if re.search(r'for\s*\(\s*i\s*=', code):
             fixed_code = re.sub(r'for\s*\(\s*i\s*=', 'for(let i=', fixed_code)
-        response += "✅ **Исправленный код:**\n"
-        response += f"\`\`\`javascript\n{fixed_code}\n\`\`\`"
+        response += "✅ <b>Исправленный код:</b>\n"
+        response += "```javascript\n" + fixed_code + "\n```"
         return response
 
     def _analyze_python_errors(self, code: str) -> str:
@@ -927,51 +947,33 @@ class EnhancedAIHandler:
         if re.search(r"l\s*=\s*\[\].*\nfor.*:\n.*l\.append", code, re.MULTILINE):
             suggestions.append("💡 Можно заменить цикл с append на list comprehension")
 
-        response = "🔍 **Анализ Python кода:**\n\n"
-        response += f"\`\`\`python\n{code}\n\`\`\`\n\n"
+        response = "🔍 <b>Анализ Python кода (базовая проверка):</b>\n\n"
+        response += "```python\n" + code + "\n```\n\n"
         if errors:
-            response += "🚨 **Найденные проблемы:**\n" + "\n".join(errors) + "\n\n"
+            response += "🚨 <b>Найденные проблемы:</b>\n" + "\n".join(errors) + "\n\n"
         if suggestions:
-            response += "💡 **Рекомендации:**\n" + "\n".join(suggestions) + "\n\n"
+            response += "💡 <b>Рекомендации:</b>\n" + "\n".join(suggestions) + "\n\n"
         if not errors and not suggestions:
-            response += "✅ Явных проблем не найдено. Для глубокого анализа отправь код через `объясни этот код`."
+            response += "✅ Явных проблем не найдено. Для глубокого анализа напиши <code>объясни этот код</code>."
         return response
 
-    async def _get_learning_advice(self, message: str) -> str:
-        return """🚀 **С чего начать изучение программирования?**
-
-📚 **Рекомендуемый путь для новичков:**
-
-**1. Выберите первый язык:**
-• **Python** - простой синтаксис, много материалов
-• **JavaScript** - для веб-разработки
-• **Java** - для серьезных приложений
-
-**2. Основы программирования:**
-• Переменные и типы данных
-• Условия (if/else)
-• Циклы (for/while)
-• Функции
-• Массивы/списки
-
-**3. Практика:**
-• Решайте задачи на Codewars, LeetCode
-• Создавайте небольшие проекты
-• Читайте чужой код
-
-**4. Ресурсы для изучения:**
-• **Бесплатно:** freeCodeCamp, Codecademy
-• **Книги:** "Изучаем Python" Марка Лутца
-• **YouTube:** каналы по программированию
-
-**5. Следующие шаги:**
-• Изучите Git и GitHub
-• Освойте базы данных (SQL)
-• Выберите специализацию (веб, мобильные приложения, ИИ)
-
-💡 **Главный совет:** Программируйте каждый день, даже по 30 минут!
-
-🤝 **Нужна помощь?** Обращайтесь к создателю: @vadzim_belarus"""
+    def _get_learning_advice_static(self) -> str:
+        """Статичный совет — используется только когда Groq недоступен."""
+        return (
+            "🚀 <b>С чего начать изучение программирования?</b>\n\n"
+            "<b>1. Выберите первый язык:</b>\n"
+            "• <b>Python</b> — простой синтаксис, много материалов\n"
+            "• <b>JavaScript</b> — для веб-разработки\n\n"
+            "<b>2. Основы:</b>\n"
+            "• Переменные, условия (if/else), циклы, функции\n\n"
+            "<b>3. Практика:</b>\n"
+            "• Codewars, LeetCode — задачи на каждый день\n"
+            "• Небольшие pet-проекты\n\n"
+            "<b>4. Бесплатные ресурсы:</b>\n"
+            "• freeCodeCamp, Codecademy, HTML Academy\n\n"
+            "💡 Главный совет: программируйте каждый день, хотя бы 30 минут!\n"
+            "🤝 Вопросы? <a href='https://vadzim.by/pro-menya/'>Вадим</a> помогает."
+        )
 
     async def explain_code(self, code: str) -> str:
         if not smart_features:
@@ -1034,34 +1036,19 @@ class EnhancedAIHandler:
             return "sql"
         return smart_features.detect_language_by_code(code) if smart_features else "неизвестный"
 
-    def _build_prompt(self, message: str, mode: str) -> str:
-        mode_descriptions = {
-            "analyze_code": "Проанализируй этот код. Весь код оформляй в ОДИН блок с \`\`\`язык",
-            "debug_code": "Найди и исправь ошибки в коде. Весь код оформляй в ОДИН блок с \`\`\`язык",
-            "explain_concept": "Объясни концепцию простыми словами с примерами кода. Код в \`\`\`язык",
-            "optimize_code": "Оптимизируй код. Весь код оформляй в ОДИН блок с \`\`\`язык",
-            "architecture_advice": "Дай советы по архитектуре с примерами. Код в \`\`\`язык",
-            "general": "Ответь на вопрос по программированию. Код оформляй в \`\`\`язык"
-        }
-        task = mode_descriptions.get(mode, mode_descriptions["general"])
-        return f"{task}:\n\n{message}"
-
     def _format_for_telegram(self, text: str) -> str:
         if not text:
             return text
-        code_blocks = re.findall(r'\`\`\`(\w+)?\s*(.*?)\`\`\`', text, re.DOTALL)
-        if not code_blocks:
-            return text
-        formatted_text = text
-        for lang, code in code_blocks:
-            escaped_code = code.replace('_', '\\_').replace('*', '\\*').replace('`', '\\`')
-            if lang:
-                telegram_code_block = f'\`\`\`{lang}\n{escaped_code}\n\`\`\`'
-            else:
-                telegram_code_block = f'\`\`\`\n{escaped_code}\n\`\`\`'
-            original_block = f'\`\`\`{lang or ""}\n{code}\n\`\`\`'
-            formatted_text = formatted_text.replace(original_block, telegram_code_block)
-        return formatted_text
+        # Telegram в режиме Markdown v2 корректно отображает код внутри ```,
+        # поэтому просто нормализуем блоки: убеждаемся что они на отдельных строках.
+        # Экранировать _ и * внутри code-блоков НЕ нужно — Telegram сам это делает.
+        def normalize_block(m: re.Match) -> str:
+            lang = m.group(1) or ""
+            code = m.group(2).strip()
+            return "```" + lang + "\n" + code + "\n```"
+
+        normalized = re.sub(r'```(\w*)\s*(.*?)```', normalize_block, text, flags=re.DOTALL)
+        return normalized
 
     def _get_fallback_response(self, message: str, mode: str) -> str:
         fallbacks = {
