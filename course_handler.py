@@ -781,6 +781,9 @@ async def _open_lesson_for_user(
     bot: Optional[Bot] = None,
 ) -> tuple[bool, str]:
     progress_manager.set_active_lesson(user_id, lesson_id)
+    # Сохраняем имя для напоминаний (нет — не страшно, просто не будет имени)
+    if display_name:
+        progress_manager.update_user_identity(user_id, display_name=display_name)
     ok = await course_handler.send_lesson_dm(user_id, lesson_id, bot=bot)
     if not ok:
         return False, "forbidden"
@@ -1022,6 +1025,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     name = _display_name(user)
     chat = update.effective_chat
+    # Обновляем идентификатор при каждом взаимодействии — нужно для напоминаний
+    progress_manager.update_user_identity(
+        user_id,
+        display_name=name,
+        username=getattr(user, "username", None) or "",
+    )
 
     # --- Личка: уроковые колбэки ---
     if chat.type == ChatType.PRIVATE:

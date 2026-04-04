@@ -50,6 +50,10 @@ PERIOD_DAYS = int(os.getenv("PERIOD_DAYS", "4"))
 TZ = os.getenv("TZ", "Europe/Minsk")
 COURSE_SCHEDULER_ENABLED = os.getenv("COURSE_SCHEDULER_ENABLED", "0") == "1"
 STATE_FILE = os.getenv("STATE_FILE", "state.json")
+# Напоминания: через сколько дней неактивности слать (0 = отключено)
+REMINDER_INACTIVE_DAYS = int(os.getenv("REMINDER_INACTIVE_DAYS", "3"))
+# Час отправки напоминаний (по TZ), по умолчанию 10:00
+REMINDER_HOUR = int(os.getenv("REMINDER_HOUR", "10"))
 
 MENTOR_URL = "https://t.me/vadzimbelarus"
 SITE_URL = "https://vadzim.by/"
@@ -184,6 +188,114 @@ class CourseScheduler:
         except Exception as e:
             logger.error("Ошибка публикации анонса: %s", e)
 
+    # ── Тексты напоминаний (выбираются случайно) ──────────────────────────────
+    _REMINDER_DM_TEXTS = [
+        (
+            "👋 <b>{name}</b>, ты не заходил(а) в курс уже {days} дн.\n\n"
+            "Всё ок — просто нажми кнопку ниже, и урок придёт прямо сюда. "
+            "Ты на <b>{done}/{total}</b> уроке — осталось совсем немного!"
+        ),
+        (
+            "⚡ <b>{name}</b>, курс скучает.\n\n"
+            "Ты не открывал(а) уроки {days} дн. "
+            "Один урок занимает 3–5 минут — самое время вернуться!"
+        ),
+        (
+            "🔥 <b>{name}</b>, стрик можно возобновить!\n\n"
+            "Прошло {days} дн. без урока. Возвращайся — ты уже прошёл(а) <b>{done}</b> из <b>{total}</b> уроков."
+        ),
+        (
+            "📚 <b>{name}</b>, твой прогресс ждёт тебя.\n\n"
+            "Не теряй набранный темп — {days} дн. простоя легко закрыть одним уроком сегодня."
+        ),
+        (
+            "💡 <b>{name}</b>, маленький шаг лучше долгого перерыва.\n\n"
+            "Ты уже прошёл(а) {done}/{total} уроков. Следующий урок — один клик."
+        ),
+    ]
+
+    _REMINDER_GROUP_TEXTS = [
+        "👀 <b>{mention}</b>, ты давно не появлялся(ась) в курсе — {days} дн. Возвращайся, ждём! 🔥",
+        "⚡ <b>{mention}</b>, {days} дней без урока — это много. Один урок сегодня исправит ситуацию!",
+        "📚 <b>{mention}</b>, курс не забыл тебя! Возвращайся — твой прогресс на месте.",
+        "🚀 <b>{mention}</b>, {days} дней перерыва — но никогда не поздно продолжить. Жми «▶️ Начать»!",
+        "💪 <b>{mention}</b>, группа двигается вперёд — присоединяйся! Уже {days} дн. не было уроков.",
+    ]
+
+    async def send_reminders(self) -> None:
+        """Найти неактивных учеников, отправить DM + упомянуть в группе."""
+        if not self.bot or REMINDER_INACTIVE_DAYS <= 0:
+            return
+
+        from user_progress import progress_manager
+        import random as _random
+
+        inactive = progress_manager.get_inactive_users(inactive_days=REMINDER_INACTIVE_DAYS)
+        if not inactive:
+            logger.info("Напоминания: нет неактивных пользователей (порог %d дн.)", REMINDER_INACTIVE_DAYS)
+            return
+
+        logger.info("Напоминания: найдено %d неактивных пользователей", len(inactive))
+        bot_un = await resolve_bot_username(self.bot)
+
+        for u in inactive:
+            uid = u["user_id"]
+            name = html.escape(u["display_name"] or "Привет")
+            username = u.get("username", "")
+            days = u["inactive_days"]
+            done = u["completed_count"]
+            total = u["total_lessons"]
+
+            # ── DM напоминание ────────────────────────────────────────────
+            tpl = _random.choice(self._REMINDER_DM_TEXTS)
+            dm_text = tpl.format(name=name, days=days, done=done, total=total)
+
+            keyboard_rows = []
+            if bot_un:
+                keyboard_rows.append(
+                    [InlineKeyboardButton("▶️ Продолжить курс", url=bot_deeplink_course(bot_un))]
+                )
+            keyboard = InlineKeyboardMarkup(keyboard_rows) if keyboard_rows else None
+
+            try:
+                await self.bot.send_message(
+                    chat_id=uid,
+                    text=dm_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                logger.info("Напоминание DM → user_id=%s (%s дн. неактивности)", uid, days)
+                progress_manager.mark_reminder_sent(uid)
+            except Exception as e:
+                logger.warning("Напоминание DM user_id=%s: %s", uid, e)
+                # Если Forbidden — пользователь заблокировал бота, не логируем как ошибку
+                progress_manager.mark_reminder_sent(uid)  # всё равно отмечаем
+
+            # ── Упоминание в группе (только если есть CHAT_ID) ───────────────
+            if CHAT_ID:
+                if username:
+                    # @username — всегда работает
+                    mention = f"@{html.escape(username)}"
+                else:
+                    # Inline mention по user_id (работает если пользователь в группе)
+                    mention = f'<a href="tg://user?id={uid}">{name}</a>'
+
+                gtpl = _random.choice(self._REMINDER_GROUP_TEXTS)
+                group_text = gtpl.format(mention=mention, days=days)
+
+                try:
+                    await self.bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=group_text,
+                        parse_mode="HTML",
+                    )
+                    logger.info("Напоминание в группу → %s", mention)
+                except Exception as e:
+                    logger.warning("Напоминание в группу user_id=%s: %s", uid, e)
+
+            # Небольшая пауза между пользователями — не триггерим flood limit
+            await asyncio.sleep(0.5)
+
     def setup_scheduler(self) -> None:
         if not COURSE_SCHEDULER_ENABLED:
             logger.info("Планировщик отключён (COURSE_SCHEDULER_ENABLED=0)")
@@ -203,6 +315,21 @@ class CourseScheduler:
             IntervalTrigger(days=PERIOD_DAYS),
             id="recurring_lessons",
         )
+
+        # Напоминания неактивным — каждый день в REMINDER_HOUR:00
+        if REMINDER_INACTIVE_DAYS > 0:
+            self.scheduler.add_job(
+                self.send_reminders,
+                "cron",
+                hour=REMINDER_HOUR,
+                minute=0,
+                id="daily_reminders",
+            )
+            logger.info(
+                "Напоминания: неактивность >%d дн., каждый день в %02d:00",
+                REMINDER_INACTIVE_DAYS,
+                REMINDER_HOUR,
+            )
         logger.info("Планировщик: период %s дн., TZ=%s", PERIOD_DAYS, TZ)
 
     async def run_forever(self) -> None:

@@ -132,6 +132,24 @@ class UserProgressManager:
     def get_active_lesson_id(self, user_id: int) -> Optional[str]:
         return self.get_user_progress(user_id).get("active_lesson_id")
 
+    def update_user_identity(
+        self,
+        user_id: int,
+        display_name: Optional[str] = None,
+        username: Optional[str] = None,
+    ) -> None:
+        """Сохранить имя и @username при каждом взаимодействии — нужно для напоминаний."""
+        data = self.get_user_progress(user_id)
+        changed = False
+        if display_name:
+            data["display_name"] = display_name
+            changed = True
+        if username:
+            data["username"] = username
+            changed = True
+        if changed:
+            self.save_progress()
+
     def set_active_lesson(self, user_id: int, lesson_id: str) -> None:
         data = self.get_user_progress(user_id)
         data["active_lesson_id"] = lesson_id
@@ -305,6 +323,61 @@ class UserProgressManager:
                 "last_lesson_time": None,
             }
             self.save_progress()
+
+    def get_inactive_users(self, inactive_days: int = 3) -> List[Dict]:
+        """
+        Вернуть пользователей, которые:
+        - были активны хотя бы раз (есть started_at)
+        - не завершили курс
+        - не выходили в бот больше inactive_days дней
+        - последнее напоминание было >inactive_days дней назад (или не было)
+        """
+        cutoff = datetime.now() - timedelta(days=inactive_days)
+        results = []
+        for uid, data in self.progress_data.items():
+            # Пропускаем тех, кто прошёл весь курс
+            from curriculum import total_lessons as _total
+            total = _total()
+            done_n = len(data.get("completed_lesson_ids") or [])
+            if done_n >= total:
+                continue
+            # Проверяем последнюю активность
+            last_str = data.get("last_activity")
+            if not last_str:
+                continue
+            try:
+                last_dt = datetime.fromisoformat(last_str)
+            except (ValueError, TypeError):
+                continue
+            if last_dt >= cutoff:
+                continue  # ещё активен
+            # Проверяем: не слали напоминание недавно
+            last_remind_str = data.get("last_reminder_at")
+            if last_remind_str:
+                try:
+                    last_remind_dt = datetime.fromisoformat(last_remind_str)
+                    if last_remind_dt >= cutoff:
+                        continue  # уже напомнили недавно
+                except (ValueError, TypeError):
+                    pass
+            results.append({
+                "user_id": int(uid),
+                "display_name": data.get("display_name", ""),
+                "username": data.get("username", ""),
+                "last_activity": last_dt,
+                "inactive_days": (datetime.now() - last_dt).days,
+                "completed_count": done_n,
+                "total_lessons": total,
+                "active_lesson_id": data.get("active_lesson_id"),
+                "cursor": int(data.get("curriculum_cursor", 0)),
+            })
+        return results
+
+    def mark_reminder_sent(self, user_id: int) -> None:
+        """Отметить что напоминание отправлено — предотвращает спам."""
+        data = self.get_user_progress(user_id)
+        data["last_reminder_at"] = datetime.now().isoformat()
+        self.save_progress()
 
     def get_all_users(self) -> List[Dict]:
         users = []
