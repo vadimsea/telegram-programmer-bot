@@ -350,24 +350,33 @@ class EnhancedAIHandler:
             "как написать", "как использовать", "зачем нужен", "почему не работает",
             "передай", "расскажи про", "скажи про", "подскажи как",
             "напиши код", "сделай программу", "создай", "объясни код",
+            "объясни этот", "объясни как", "объясни что",
             "о программировании", "про python", "про javascript",
+            "как работает", "в чём разница", "как подключить", "как использовать",
         )
         if any(kw in trimmed_for_check for kw in intent_keywords):
             return None
 
+        words_set = set(words)
+
         for preset in self.SMALL_TALK_PRESETS:
             for trigger in preset["triggers"]:
-                is_exact = trigger == trimmed_for_check
-                is_substr = trigger in trimmed_for_check
+                trigger_words = trigger.split()
 
-                if not is_exact and not is_substr:
+                if len(trigger_words) == 1:
+                    # Одно слово: требуем точного вхождения как отдельного токена.
+                    # Это предотвращает срабатывание "hello" внутри console.log('hello').
+                    is_match = trigger in words_set
+                else:
+                    # Фраза: проверяем как подстроку (пробелы гарантируют границы слов).
+                    is_match = trigger == trimmed_for_check or trigger in trimmed_for_check
+
+                if not is_match:
                     continue
 
-                # Для «проблемных» триггеров ("не работает", "ошибка" и т.п.)
-                # применяем только точное совпадение или совпадение с коротким
-                # сообщением (не длиннее trigger + 1 слово).
-                if trigger in self._PROBLEM_TRIGGERS and not is_exact:
-                    trigger_len = len(trigger.split())
+                # Для «проблемных» триггеров — только точное или очень короткое сообщение.
+                if trigger in self._PROBLEM_TRIGGERS and trigger != trimmed_for_check:
+                    trigger_len = len(trigger_words)
                     if len(words) > trigger_len + 1:
                         continue
 
@@ -538,7 +547,11 @@ class EnhancedAIHandler:
                     logger.info(f"🔄 Обработка запроса от пользователя {user_context.user_id} (уровень: {skill_level})")
 
             message_lower = message.lower().strip()
-            
+
+            # Пустое сообщение — возвращаем подсказку без вызова Groq
+            if not message_lower:
+                return "Напиши вопрос или вставь код — отвечу!", True
+
             # Early truncation to keep answers compact
             max_rows = 10
             lines = message.splitlines()
@@ -549,7 +562,9 @@ class EnhancedAIHandler:
             small_talk_reply = self._match_small_talk(message_lower)
             if small_talk_reply:
                 tone = self._detect_message_tone(message_lower)
-                if tone:
+                # Добавляем тональный отклик только если он не повторяет смысл small_talk.
+                # Например, "ура получилось" → пресет уже радостный, не нужно дублировать.
+                if tone and tone not in ("positive", "excited"):
                     small_talk_reply = self._augment_with_tone(small_talk_reply, tone)
                 # is_fallback=True: small-talk не кешируется (ответы случайны, у каждого свой)
                 return small_talk_reply, True
@@ -810,21 +825,39 @@ class EnhancedAIHandler:
 
     async def _analyze_code_for_errors(self, message: str) -> str:
         """Анализ кода на ошибки"""
-        code_match = re.search(r'\`\`\`[\w]*\n?(.*?)\n?\`\`\`', message, re.DOTALL)
+        code_match = re.search(r'```[\w]*\n?(.*?)\n?```', message, re.DOTALL)
 
         if code_match:
             code = code_match.group(1).strip()
         else:
+            # Пробуем извлечь код после ключевой фразы (без бэктиков)
             lowered = message.lower()
-            if "проанализируй код" in lowered:
-                code = message[lowered.index("проанализируй код") + len("проанализируй код"):].strip()
-            elif "analyze code" in lowered:
-                code = message[lowered.index("analyze code") + len("analyze code"):].strip()
-            else:
-                code = ""
+            extract_markers = [
+                "найди ошибку:", "найди ошибку в коде:", "найди ошибку в коде",
+                "найди ошибку", "проанализируй код:", "проанализируй код",
+                "analyze code:", "analyze code", "find error:",
+            ]
+            code = ""
+            for marker in extract_markers:
+                if marker in lowered:
+                    idx = lowered.index(marker) + len(marker)
+                    candidate = message[idx:].strip()
+                    if candidate:
+                        code = candidate
+                        break
+            # Если нет маркера — всё сообщение (пользователь мог просто кинуть код)
+            if not code:
+                # Берём всё, что после первой строки
+                lines = message.splitlines()
+                candidate = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+                code = candidate
 
         if not code:
-            return "❌ Не могу найти код в сообщении. Пожалуйста, приложите код для анализа."
+            return (
+                "❌ Не вижу код в сообщении.\n"
+                "Отправь код внутри тройных бэктиков:\n"
+                "<code>```js\nкод здесь\n```</code>"
+            )
 
         # Определяем язык
         if any(keyword in code.lower() for keyword in ['let', 'const', 'var', 'console.log', 'for(']):
