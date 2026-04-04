@@ -369,7 +369,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         display = update.message.from_user.first_name or (
             f"@{update.message.from_user.username}" if update.message.from_user.username else "Участник"
         )
-        ok, hint = await try_deliver_course_to_private(user_id, display)
+        # Передаём context.bot — он уже инициализирован PTB Application (нет проблем с aiohttp-сессией)
+        ok, hint = await try_deliver_course_to_private(user_id, display, bot=context.bot)
         if ok:
             await update.message.reply_text(
                 "✅ Урок — в сообщениях выше.\n"
@@ -379,13 +380,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hint == "rate":
             sec = get_lesson_cooldown_seconds()
             await update.message.reply_text(
-                f"⏰ С последней выдачи урока прошло мало времени. Подожди ~{sec} сек. "
-                "или снова нажми кнопку в группе."
+                f"⏰ Только что выдал урок. Подожди ~{sec} сек. и посмотри выше."
             )
             return
         if hint == "forbidden":
+            # пользователь УЖЕ в боте (именно здесь он написал /start) — значит DM-отправка
+            # упала не из-за Forbidden, а из-за другой ошибки; выдаём реальное описание
             await update.message.reply_text(
-                "Чтобы получать уроки, нажми внизу «Start» или «Запустить» у этого бота и открой ссылку из группы ещё раз."
+                "Не удалось отправить урок — возможно, сервис только запустился. "
+                "Подожди 10–15 секунд и нажми кнопку «Начать или продолжить» в группе ещё раз."
             )
             return
         await update.message.reply_text(f"⚠️ {hint}")

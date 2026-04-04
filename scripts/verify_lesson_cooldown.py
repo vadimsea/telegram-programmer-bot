@@ -17,7 +17,7 @@ def main() -> int:
     if old_snippet in text:
         print("FAIL: в main.py всё ещё есть старый текст про паузу ~1 мин")
         return 1
-    if "С последней выдачи урока" not in text:
+    if "Только что выдал урок" not in text and "С последней выдачи урока" not in text:
         print("FAIL: в main.py нет нового текста rate-hint для /start course")
         return 1
 

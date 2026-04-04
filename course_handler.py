@@ -462,12 +462,19 @@ class CourseHandler:
             )
         return body
 
-    async def send_lesson_dm(self, user_id: int, lesson_id: str) -> bool:
-        if not self.bot:
+    async def send_lesson_dm(self, user_id: int, lesson_id: str, bot: Optional[Bot] = None) -> bool:
+        """Отправить первую часть урока в ЛС.
+
+        bot — предпочтительно передавать PTB-бота из context.bot (уже инициализирован).
+        Fallback: self.bot (отдельный экземпляр; может не иметь активной сессии).
+        """
+        effective_bot = bot or self.bot
+        if not effective_bot:
+            logger.error("send_lesson_dm: нет бота (bot=None и self.bot=None)")
             return False
         try:
             text = self._lesson_message_part1(lesson_id)
-            await self.bot.send_message(
+            await effective_bot.send_message(
                 chat_id=user_id,
                 text=text,
                 reply_markup=build_lesson_step1_keyboard(lesson_id),
@@ -475,10 +482,27 @@ class CourseHandler:
             )
             return True
         except Forbidden:
-            logger.warning("User %s has not started the bot", user_id)
+            logger.warning("send_lesson_dm: user_id=%s не начал бота (Forbidden)", user_id)
             return False
         except TelegramError as e:
-            logger.error("send_lesson_dm: %s", e)
+            logger.error("send_lesson_dm TelegramError: %s", e)
+            # Если упал основной бот — пробуем fallback self.bot (если он другой)
+            if effective_bot is not self.bot and self.bot:
+                logger.info("send_lesson_dm: fallback на self.bot для user_id=%s", user_id)
+                try:
+                    text = self._lesson_message_part1(lesson_id)
+                    await self.bot.send_message(
+                        chat_id=user_id,
+                        text=text,
+                        reply_markup=build_lesson_step1_keyboard(lesson_id),
+                        parse_mode="HTML",
+                    )
+                    return True
+                except (Forbidden, TelegramError) as e2:
+                    logger.error("send_lesson_dm fallback: %s", e2)
+            return False
+        except Exception as e:
+            logger.exception("send_lesson_dm unexpected: %s", e)
             return False
 
     async def announce_group(self, display_name: str, lesson_id: str, kind: str) -> None:
@@ -687,36 +711,39 @@ async def _open_lesson_for_user(
     lesson_id: str,
     *,
     announce_opened: bool = True,
+    bot: Optional[Bot] = None,
 ) -> tuple[bool, str]:
     progress_manager.set_active_lesson(user_id, lesson_id)
-    ok = await course_handler.send_lesson_dm(user_id, lesson_id)
+    ok = await course_handler.send_lesson_dm(user_id, lesson_id, bot=bot)
     if not ok:
-        return False, "Сначала открой чат с ботом (кнопка «Открыть бота» в закрепе или ссылка после кнопки в группе)."
+        return False, "forbidden"
     if announce_opened:
         await course_handler.announce_group(display_name, lesson_id, "opened")
     return True, ""
 
 
-async def try_deliver_course_to_private(user_id: int, display_name: str) -> tuple[bool, str]:
+async def try_deliver_course_to_private(
+    user_id: int, display_name: str, bot: Optional[Bot] = None
+) -> tuple[bool, str]:
     """
-    Одна точка входа: как «Начать или продолжить» из группы.
-    Возвращает (True, '') или (False, код/текст): 'rate', 'forbidden', либо текст ошибки deliver_next_lesson.
+    Одна точка входа: как «Начать или продолжить» из группы или /start course.
+    bot — PTB-бот из context.bot; если не передан — используется course_handler.bot.
+    Возвращает (True, '') или (False, 'rate'|'forbidden'|текст ошибки).
     """
     if progress_manager.is_lesson_request_cooldown(user_id):
         return False, "rate"
     active = progress_manager.get_active_lesson_id(user_id)
     if active:
-        ok = await course_handler.send_lesson_dm(user_id, active)
+        ok = await course_handler.send_lesson_dm(user_id, active, bot=bot)
         if ok:
             progress_manager.mark_lesson_request_done(user_id)
             return True, ""
         return False, "forbidden"
-    ok, err = await deliver_next_lesson(user_id, display_name)
+    ok, err = await deliver_next_lesson(user_id, display_name, bot=bot)
     if ok:
         progress_manager.mark_lesson_request_done(user_id)
         return True, ""
-    err_l = (err or "").lower()
-    if "открой" in err_l and "бот" in err_l:
+    if err == "forbidden" or ("открой" in (err or "").lower() and "бот" in (err or "").lower()):
         return False, "forbidden"
     return False, err or "error"
 
@@ -726,6 +753,7 @@ async def deliver_next_lesson(
     display_name: str,
     *,
     skip_group_open: bool = False,
+    bot: Optional[Bot] = None,
 ) -> tuple[bool, str]:
     total = total_lessons()
     if not progress_manager.can_open_next_lesson(user_id, total):
@@ -740,6 +768,7 @@ async def deliver_next_lesson(
         display_name,
         lesson_id,
         announce_opened=not skip_group_open,
+        bot=bot,
     )
     return ok, err
 
@@ -1037,7 +1066,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "start_course":
         try:
             logger.info("start_course: user_id=%s chat_id=%s", user_id, getattr(chat, "id", None))
-            ok, hint = await try_deliver_course_to_private(user_id, name)
+            ok, hint = await try_deliver_course_to_private(user_id, name, bot=bot)
             if ok:
                 await _answer_jump_to_private_bot(query, bot)
                 return
