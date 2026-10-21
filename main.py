@@ -202,6 +202,9 @@ def _is_legacy_fallback_response(text: str) -> bool:
     markers = ("Hello, world", "Вопрос по программированию", "Быстрый ответ из кэша")
     text_lower = text.lower()
     return any(marker.lower() in text_lower for marker in markers)
+RESPONSE_CACHE_ENABLED = os.getenv("RESPONSE_CACHE_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
+
 # Контекст пользователя
 class UserContext:
     def __init__(self):
@@ -219,9 +222,11 @@ class UserContext:
         self.user_id = None
         self.feedback_scores = []
 
+    MAX_HISTORY = 24  # messages kept per user (12 exchanges)
+
     def add_message(self, role: str, content: str):
         self.history.append({"role": role, "content": content, "timestamp": time.time()})
-        if len(self.history) > 10:  # Increased history size
+        if len(self.history) > self.MAX_HISTORY:
             self.history.pop(0)
 
     def get_recent_context(self, n: int):
@@ -553,7 +558,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         import hashlib
         question_hash = hashlib.md5(text.encode()).hexdigest()
-        cached_response = response_cache.get(question_hash)
+        # The cache is global and keyed by the question text only, so it handed one user's answer to
+        # everyone and broke follow-ups ("а подробнее?"). Off by default; RESPONSE_CACHE_ENABLED=true restores it.
+        cached_response = response_cache.get(question_hash) if RESPONSE_CACHE_ENABLED else None
 
         if cached_response and _is_legacy_fallback_response(cached_response):
             logger.info("Removing legacy fallback from cache")
@@ -601,7 +608,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     skill_level=user_context.skill_level,
                     preferences=user_context.preferences
                 ),
-                timeout=30.0
+                timeout=60.0
             )
         except asyncio.TimeoutError:
             logger.error(f"Timeout for user {user_id}")
@@ -625,7 +632,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        if not is_fallback:
+        if not is_fallback and RESPONSE_CACHE_ENABLED:
             response_cache.set(question_hash, response)
         else:
             logger.info("Skipping cache for fallback response")

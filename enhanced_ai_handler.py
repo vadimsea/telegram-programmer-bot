@@ -820,12 +820,15 @@ class EnhancedAIHandler:
                 # Add conversation history if available
                 if user_context and hasattr(user_context, 'history') and user_context.history:
                     # Get last 6 messages (3 exchanges) for context
-                    recent_history = user_context.get_recent_context(6)
-                    for msg in recent_history:
-                        if msg.get('role') == 'user':
-                            messages.append({"role": "user", "content": msg.get('content', '')})
-                        elif msg.get('role') == 'assistant':
-                            messages.append({"role": "assistant", "content": msg.get('content', '')})
+                    # The current user message is already the last history entry and is sent below as
+                    # `prompt`, so leave it out here to avoid showing the model the same turn twice.
+                    past = list(user_context.history)
+                    if past and past[-1].get('role') == 'user':
+                        past = past[:-1]
+                    for msg in past[-14:]:
+                        content = (msg.get('content') or '')[:1800]
+                        if msg.get('role') in ('user', 'assistant') and content:
+                            messages.append({"role": msg['role'], "content": content})
 
                 # Add current message
                 messages.append({"role": "user", "content": prompt})
