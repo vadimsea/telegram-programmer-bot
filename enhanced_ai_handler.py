@@ -309,9 +309,55 @@ class EnhancedAIHandler:
         "telegram": "Telegram-ботам",
     }
 
+    # Groq regularly retires models; if GROQ_MODEL stops being served, use the best available chat model.
+    _GROQ_MODEL_PREFERENCE = (
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+        "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.1-8b-instant",
+    )
+    _NOT_CHAT_MARKERS = ("whisper", "guard", "tts", "playai", "orpheus", "safeguard", "compound")
+
+    _groq_model: str | None = None
+
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
+
+    async def _resolve_groq_model(self) -> str:
+        if self._groq_model:
+            return self._groq_model
+        model = GROQ_MODEL
+        try:
+            ids = sorted(m.id for m in (await self.groq_client.models.list()).data)
+            logger.info("Groq models available: %s", ", ".join(ids))
+            if GROQ_MODEL not in ids:
+                chat_ids = [i for i in ids if not any(x in i.lower() for x in self._NOT_CHAT_MARKERS)]
+                model = next((m for m in self._GROQ_MODEL_PREFERENCE if m in chat_ids), chat_ids[0] if chat_ids else GROQ_MODEL)
+                logger.warning("Groq model %s is not available, using %s", GROQ_MODEL, model)
+        except Exception as exc:
+            logger.warning("Could not list Groq models, keeping %s: %s", GROQ_MODEL, exc)
+            return model  # do not cache: try again on the next request
+        self._groq_model = model
+        return model
+
+    async def _groq_chat(self, messages, temperature: float, max_tokens: int, timeout: int):
+        model = await self._resolve_groq_model()
+        extra = {}
+        if model.startswith("openai/gpt-oss"):
+            # gpt-oss reasons before answering; keep that short and leave room for the answer itself.
+            extra["reasoning_effort"] = "low"
+            max_tokens *= 3
+        return await self.groq_client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            **extra,
+        )
     # Триггеры, которые совпадают только с коротким сообщением (≤ слов в триггере + 1).
     # Если пользователь написал "не работает fetch" — это техвопрос, а не small-talk.
     _PROBLEM_TRIGGERS = frozenset({
@@ -784,12 +830,11 @@ class EnhancedAIHandler:
                 # Add current message
                 messages.append({"role": "user", "content": prompt})
 
-                response = await self.groq_client.chat.completions.create(
-                    model=GROQ_MODEL,
-                    messages=messages,
+                response = await self._groq_chat(
+                    messages,
                     temperature=0.7,  # Увеличена температура для более естественных и вариативных ответов
                     max_tokens=1200,  # Увеличено для более полных ответов
-                    timeout=20  # Увеличено время ожидания
+                    timeout=30,
                 )
 
                 if not response or not hasattr(response, "choices") or not response.choices:
@@ -1253,15 +1298,14 @@ class EnhancedAIHandler:
             f"Код ученика:\n{code[:3500]}"
         )
         try:
-            response = await self.groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
+            response = await self._groq_chat(
+                [
                     {"role": "system", "content": CODE_REVIEW_SYSTEM_PROMPT},
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.35,
                 max_tokens=280,
-                timeout=25,
+                timeout=30,
             )
             content = (response.choices[0].message.content or "").strip()
             status, feedback = _parse_submission_review(content)
