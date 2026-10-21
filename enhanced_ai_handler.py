@@ -7,7 +7,7 @@ import logging
 import random
 import re
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
-from groq import AsyncGroq
+from groq import AsyncGroq, RateLimitError
 from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
 
 try:
@@ -320,44 +320,64 @@ class EnhancedAIHandler:
     )
     _NOT_CHAT_MARKERS = ("whisper", "guard", "tts", "playai", "orpheus", "safeguard", "compound")
 
-    _groq_model: str | None = None
+    _groq_models: List[str] | None = None
+    _groq_model: str | None = None  # model that answered last (diagnostics)
 
     def __init__(self):
         self.groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         logger.info("🤖 EnhancedAIHandler инициализирован")
 
-    async def _resolve_groq_model(self) -> str:
-        if self._groq_model:
-            return self._groq_model
-        model = GROQ_MODEL
+    async def _resolve_groq_models(self) -> List[str]:
+        """Chat models to try, best first: GROQ_MODEL (or its replacement), then the other usable ones.
+
+        Groq limits tokens per minute per model, so a second model is a free overflow lane.
+        """
+        if self._groq_models:
+            return self._groq_models
+        models = [GROQ_MODEL]
         try:
             ids = sorted(m.id for m in (await self.groq_client.models.list()).data)
             logger.info("Groq models available: %s", ", ".join(ids))
-            if GROQ_MODEL not in ids:
-                chat_ids = [i for i in ids if not any(x in i.lower() for x in self._NOT_CHAT_MARKERS)]
-                model = next((m for m in self._GROQ_MODEL_PREFERENCE if m in chat_ids), chat_ids[0] if chat_ids else GROQ_MODEL)
-                logger.warning("Groq model %s is not available, using %s", GROQ_MODEL, model)
+            chat_ids = [i for i in ids if not any(x in i.lower() for x in self._NOT_CHAT_MARKERS)]
+            ordered = [m for m in [GROQ_MODEL, *self._GROQ_MODEL_PREFERENCE] if m in chat_ids]
+            if GROQ_MODEL not in chat_ids:
+                logger.warning("Groq model %s is not available, using %s", GROQ_MODEL, ordered[:1] or chat_ids[:1])
+            models = list(dict.fromkeys(ordered)) or chat_ids[:1] or [GROQ_MODEL]
         except Exception as exc:
             logger.warning("Could not list Groq models, keeping %s: %s", GROQ_MODEL, exc)
-            return model  # do not cache: try again on the next request
-        self._groq_model = model
-        return model
+            return models  # do not cache: try again on the next request
+        self._groq_models = models
+        return models
 
     async def _groq_chat(self, messages, temperature: float, max_tokens: int, timeout: int):
-        model = await self._resolve_groq_model()
-        extra = {}
-        if model.startswith("openai/gpt-oss"):
-            # gpt-oss reasons before answering; keep that short and leave room for the answer itself.
-            extra["reasoning_effort"] = "low"
-            max_tokens *= 3
-        return await self.groq_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            **extra,
-        )
+        models = await self._resolve_groq_models()
+        last_error: Exception | None = None
+        for position, model in enumerate(models[:3]):
+            extra = {}
+            tokens = max_tokens
+            if model.startswith("openai/gpt-oss"):
+                # gpt-oss reasons before answering; keep that short and leave room for the answer itself.
+                extra["reasoning_effort"] = "low"
+                tokens = max_tokens * 2
+            last = position == len(models[:3]) - 1
+            # Rate limited (429): move on to the next model right away instead of waiting 30s+.
+            client = self.groq_client if last else self.groq_client.with_options(max_retries=0)
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=tokens,
+                    timeout=timeout,
+                    **extra,
+                )
+                self._groq_model = model
+                return response
+            except RateLimitError as exc:
+                logger.warning("Groq rate limit on %s, trying next model", model)
+                last_error = exc
+        raise last_error  # type: ignore[misc]
+
     # Триггеры, которые совпадают только с коротким сообщением (≤ слов в триггере + 1).
     # Если пользователь написал "не работает fetch" — это техвопрос, а не small-talk.
     _PROBLEM_TRIGGERS = frozenset({
@@ -594,6 +614,12 @@ class EnhancedAIHandler:
 
             message_lower = message.lower().strip()
 
+            # main.py appends the current message to the history before calling us, so drop it here:
+            # otherwise every message looks like a repeat of itself and is treated as a follow-up.
+            history = list(getattr(user_context, 'history', None) or [])
+            if history and history[-1].get('role') == 'user'                     and (history[-1].get('content') or '').strip().lower() == message_lower:
+                history = history[:-1]
+
             # Пустое сообщение — возвращаем подсказку без вызова Groq
             if not message_lower:
                 return "Напиши вопрос или вставь код — отвечу!", True
@@ -619,26 +645,23 @@ class EnhancedAIHandler:
             follow_up_keywords = ("подробнее", "детальнее", "поподробнее", "ещё", "еще", "расскажи больше", "расскажи подробнее", "больше информации", "tell me more", "more detail")
             if any(keyword in message_lower for keyword in follow_up_keywords):
                 follow_up = True
-            elif user_context and hasattr(user_context, 'history') and user_context.history:
-                recent_user_messages = [entry['content'].lower().strip() for entry in reversed(user_context.history) if entry.get('role') == 'user']
+            elif history:
+                recent_user_messages = [entry['content'].lower().strip() for entry in reversed(history) if entry.get('role') == 'user']
                 if recent_user_messages:
                     last_question = recent_user_messages[0]
                     if last_question == message_lower or (len(message_lower) > 12 and message_lower in last_question):
                         follow_up = True
 
-            if follow_up and skill_level != 'advanced':
-                skill_level = 'intermediate' if skill_level == 'beginner' else 'advanced'
-
             base_question = None
             previous_answer = None
-            if user_context and hasattr(user_context, 'history') and user_context.history:
-                for entry in reversed(user_context.history):
+            if history:
+                for entry in reversed(history):
                     if entry.get('role') == 'assistant':
                         previous_answer = entry.get('content', '')
                         if previous_answer:
                             previous_answer = previous_answer.strip()
                         break
-                for entry in reversed(user_context.history):
+                for entry in reversed(history):
                     if entry.get('role') != 'user':
                         continue
                     prior_text = entry.get('content', '')
@@ -817,16 +840,15 @@ class EnhancedAIHandler:
 
                 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-                # Add conversation history if available
-                if user_context and hasattr(user_context, 'history') and user_context.history:
-                    # Get last 6 messages (3 exchanges) for context
-                    # The current user message is already the last history entry and is sent below as
-                    # `prompt`, so leave it out here to avoid showing the model the same turn twice.
+                # Add conversation history. The current message is the last history entry and is sent
+                # below as `prompt`, so it is left out here. Old answers are shortened to save tokens.
+                if user_context and getattr(user_context, 'history', None):
                     past = list(user_context.history)
                     if past and past[-1].get('role') == 'user':
                         past = past[:-1]
-                    for msg in past[-14:]:
-                        content = (msg.get('content') or '')[:1800]
+                    for msg in past[-10:]:
+                        limit = 900 if msg.get('role') == 'assistant' else 1500
+                        content = (msg.get('content') or '')[:limit]
                         if msg.get('role') in ('user', 'assistant') and content:
                             messages.append({"role": msg['role'], "content": content})
 
@@ -836,7 +858,7 @@ class EnhancedAIHandler:
                 response = await self._groq_chat(
                     messages,
                     temperature=0.7,  # Увеличена температура для более естественных и вариативных ответов
-                    max_tokens=1200,  # Увеличено для более полных ответов
+                    max_tokens=800,
                     timeout=30,
                 )
 
@@ -855,13 +877,6 @@ class EnhancedAIHandler:
                 if not ai_response:
                     logger.warning("⚠️ Пустой ответ после обработки. Используем fallback.")
                     return self._get_fallback_response(message, mode), True
-                    
-                # Добавляем эмоциональную поддержку, если нужно
-                if user_tone and user_tone in self.SUPPORTIVE_REACTIONS:
-                    tone_reaction = random.choice(self.SUPPORTIVE_REACTIONS[user_tone])
-                    # Добавляем реакцию только если её нет в ответе
-                    if tone_reaction.lower() not in ai_response.lower():
-                        ai_response = f"{tone_reaction}\n\n{ai_response}"
                     
                 ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
                 logger.info("✅ Успешный ответ от Groq")
@@ -1200,7 +1215,7 @@ class EnhancedAIHandler:
                 "explain_concept": "Объясни концепцию с практическими примерами и случаями использования. Покажи, где это применяется в реальных проектах и какие есть альтернативы.",
                 "optimize_code": "Оптимизируй код, покажи альтернативные подходы и объясни trade-offs. Предложи несколько вариантов с объяснением когда что использовать.",
                 "architecture_advice": "Дай советы по архитектуре с учетом масштабируемости, поддерживаемости и лучших практик. Покажи примеры.",
-                "general": "Дай подробный ответ с примерами и лучшими практиками. Покажи несколько подходов, если это уместно. Всегда предлагай конкретные следующие шаги."
+                "general": "Ответь по делу и по существу вопроса, с коротким примером, если он нужен."
             },
             "advanced": {
                 "analyze_code": "Глубокий анализ как senior-разработчик: архитектура, производительность, безопасность, edge cases, рефакторинг. Будь критичным и конструктивным, предлагай конкретные улучшения.",
@@ -1208,7 +1223,7 @@ class EnhancedAIHandler:
                 "explain_concept": "Детальное объяснение с продвинутыми паттернами, edge cases, альтернативными подходами и реальными примерами из production.",
                 "optimize_code": "Продвинутая оптимизация: алгоритмы, память, производительность, масштабируемость. Покажи trade-offs и когда что использовать.",
                 "architecture_advice": "Экспертные советы по enterprise архитектуре, паттернам, anti-patterns и масштабированию. Дай практические рекомендации.",
-                "general": "Экспертный ответ с глубоким техническим анализом. Можешь быть более кратким и техничным, но всегда с практическими примерами."
+                "general": "Дай точный технический ответ без воды: коротко, по существу, с примером только если он нужен."
             }
         }
 
@@ -1234,7 +1249,7 @@ class EnhancedAIHandler:
 
         # Добавляем стиль объяснения
         if follow_up:
-            task += " Пользователь уже получил базовый ответ, так что добавь глубины: продвинутые примеры, лучшие практики, частые ошибки и ресурсы для самостоятельного изучения."
+            task += " Пользователь просит продолжить предыдущую тему: углубись именно в неё (детали, пример), не повторяя уже сказанное."
 
         explanation_style = preferences.get('explanation_style', '')
         if explanation_style == 'detailed':
@@ -1248,8 +1263,8 @@ class EnhancedAIHandler:
             name_context = f" Пользователя зовут {user_name} — используй имя естественно, но не слишком часто."
 
         task += tone_context + name_context
-        task += " Предлагай конкретные следующие шаги, добавляй ссылки на документацию, форматируй код в ```язык``` и не повторяй предыдущие объяснения слово в слово."
-        task += " Избегай markdown таблиц, предпочитай короткие абзацы или списки, держи ответ в пределах 1200 символов, если только код не требует больше места."
+        task += " Код форматируй в ```язык```. Не повторяй предыдущие объяснения слово в слово."
+        task += " Отвечай ровно на заданный вопрос: простой вопрос — 1-4 предложения, объяснение — до ~800 символов, без таблиц, без заголовков и без разделов «частые ошибки», «ресурсы», «что дальше», если о них не просили. Ссылки на документацию только если они действительно нужны."
         
         # Добавляем инструкцию про упоминание Вадима когда уместно
         vadzim_context = ""
@@ -1261,7 +1276,7 @@ class EnhancedAIHandler:
 
         context_sections: List[str] = []
         if follow_up:
-            context_sections.append("Пользователь уже получил базовый ответ ранее. Предоставь более глубокое продолжение: добавь продвинутые примеры, выдели лучшие практики, предупреди о частых ошибках и предложи ресурсы для дальнейшего изучения.")
+            context_sections.append("Пользователь просит продолжить предыдущую тему. Дай более глубокое продолжение именно по ней, коротко и без повторов.")
         if base_question:
             context_sections.append(f"Исходный вопрос пользователя: {base_question}")
         if previous_answer:
@@ -1272,7 +1287,7 @@ class EnhancedAIHandler:
 
         context_sections.append(f"Текущее сообщение пользователя: {message}")
 
-        return f"{task}:\n\n" + "\n\n".join(context_sections) + "\n\nВажно: Дай ответ, которым бы гордился senior-разработчик. Будь конкретным, практичным и полезным. Предложи новые идеи, чтобы пользователь продвинулся дальше."
+        return f"{task}:\n\n" + "\n\n".join(context_sections) + "\n\nВажно: ответь по делу и в меру длины вопроса, опираясь на историю диалога. Будь конкретным и точным, ничего не выдумывай."
 
     async def review_submission(
         self,
