@@ -1,4 +1,5 @@
 import logging
+import re
 import asyncio
 import time
 import os
@@ -474,8 +475,34 @@ def _looks_like_code(text: str) -> bool:
                                               "console.log", "print(", "return ", "html>", "DOCTYPE"))
 
 
+try:  # python-telegram-bot >= 21
+    from telegram import LinkPreviewOptions
+except ImportError:  # pragma: no cover - older versions
+    LinkPreviewOptions = None
+
+
+def _preview_kwargs(disabled: bool) -> dict:
+    if not disabled:
+        return {}
+    if LinkPreviewOptions is not None:
+        return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
+    return {"disable_web_page_preview": True}
+
+
+def _clean_links(text: str) -> str:
+    """Models like to write autolinks as <https://...>; in Telegram that shows the angle brackets."""
+    return re.sub(r"<(https?://[^>\s]+)>", r"\1", text)
+
+
+def _wants_link_preview(response: str) -> bool:
+    """Link cards under every answer are noise; the creator answer is the one place to show the site."""
+    return response.startswith("Меня создал Вадим") or response.startswith("I was created by Vadzim")
+
+
 async def _send_answer(update: Update, response: str, header: bool = True) -> None:
     """Send an answer in as many messages as needed; never fail silently and never drop Cyrillic."""
+    response = _clean_links(response)
+    previews = _preview_kwargs(disabled=not _wants_link_preview(response))
     chunks = split_markdown(response)
     for index, chunk in enumerate(chunks):
         last = index == len(chunks) - 1
@@ -487,11 +514,11 @@ async def _send_answer(update: Update, response: str, header: bool = True) -> No
             else:
                 body = escape_html_chars(chunk)
                 html_text = f"✅ <b>Ответ:</b>\n{body}" if first else body
-            await update.message.reply_text(html_text, reply_markup=markup, parse_mode='HTML')
+            await update.message.reply_text(html_text, reply_markup=markup, parse_mode='HTML', **previews)
         except Exception as send_error:
             logger.error(f"Message sending error (chunk {index + 1}/{len(chunks)}): {send_error}")
             # Plain text always goes through, and keeps the Russian text intact.
-            await update.message.reply_text(chunk[:4000], reply_markup=markup)
+            await update.message.reply_text(chunk[:4000], reply_markup=markup, **previews)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -150,3 +150,29 @@ def test_political_question_gets_the_out_of_politics_reply_without_llm():
     run(main.handle_message(update, MagicMock()))
     assert not calls, "politics must not reach the LLM"
     assert "вне моей темы" in sent[0]["text"]
+
+
+def test_angle_bracket_links_are_cleaned_and_previews_are_off():
+    fake_llm("Документация: <https://docs.python.org/3/> — там всё есть.")
+    update, sent = make_update("где документация по python")
+    run(main.handle_message(update, MagicMock()))
+    assert "<https://docs.python.org/3/>" not in sent[0]["text"]
+    assert "https://docs.python.org/3/" in sent[0]["text"]
+    preview_disabled = (
+        "disable_web_page_preview" in sent[0] or getattr(sent[0].get("link_preview_options"), "is_disabled", False)
+    )
+    assert preview_disabled, "ordinary answers must not carry a big link card"
+
+
+def test_creator_answer_keeps_the_site_preview():
+    # use the real handler (other tests replace it with a fake LLM)
+    from enhanced_ai_handler import EnhancedAIHandler
+
+    main.enhanced_ai_handler.get_specialized_response = types.MethodType(
+        EnhancedAIHandler.get_specialized_response, main.enhanced_ai_handler
+    )
+    update, sent = make_update("кто твой создатель?")
+    run(main.handle_message(update, MagicMock()))
+    assert "https://vadzim.by/" in sent[0]["text"]
+    assert "disable_web_page_preview" not in sent[0]
+    assert "link_preview_options" not in sent[0]
