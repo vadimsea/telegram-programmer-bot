@@ -9,7 +9,7 @@ import re
 import textwrap
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
 from groq import AsyncGroq, RateLimitError
-from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
+from config import CREATOR_USERNAME, GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT, TELEGRAM_CHANNEL, WEBSITE_URL
 
 try:
     from smart_features import smart_features  # ✅ Подключаем умные функции
@@ -399,6 +399,46 @@ class EnhancedAIHandler:
         "overflow", "position", "z-index", "border", "animation", "transition",
     })
 
+    # Questions about who made the bot. Answered with a fixed text so the name and the site are always right.
+    _CREATOR_PATTERNS = (
+        r"создател", r"кто\s+(тебя|вас)\s+(создал|сделал|написал|разработал|придумал|запрограммировал|made|создали|сделали)",
+        r"кто\s+(твой|ваш)\s+(автор|разработчик|владелец|хозяин|папа|отец)", r"кто\s+(автор|разработчик)\s+(бота|этого бота|проекта)",
+        r"кем\s+(ты\s+)?(создан|сделан|разработан|написан)", r"чей\s+ты\s+бот", r"чей\s+это\s+бот",
+        r"who\s+(created|made|built|developed|wrote)\s+(you|this)", r"who\s+is\s+your\s+(creator|author|developer|owner)",
+        r"your\s+(creator|author|developer)",
+    )
+
+    def _match_creator_question(self, message_lower: str) -> Optional[str]:
+        if len(message_lower) > 120 or "```" in message_lower:
+            return None
+        if not any(re.search(pattern, message_lower) for pattern in self._CREATOR_PATTERNS):
+            return None
+        site = WEBSITE_URL.rstrip("/") if WEBSITE_URL else "https://vadzim.by"
+        english = re.search(r"[a-z]{3,}", message_lower) and not re.search(r"[а-яё]", message_lower)
+        if english:
+            lines = [
+                "I was created by Vadzim (vadzim.by) - a full-stack developer from Belarus. "
+                "I'm the Programmer's Assistant from his community.",
+                "",
+                f"🌐 Website: {site}/",
+                f"✈️ Telegram: {CREATOR_USERNAME}",
+                f"📢 Channel: {TELEGRAM_CHANNEL}",
+                "",
+                "Need a consultation or a project built? Message Vadzim directly. And what can I help you with in code?",
+            ]
+            return "\n".join(lines)
+        lines = [
+            "Меня создал Вадим (vadzim.by) — full-stack разработчик из Беларуси. "
+            "Я «Помощник Программиста» из его сообщества.",
+            "",
+            f"🌐 Сайт: {site}/",
+            f"✈️ Telegram: {CREATOR_USERNAME}",
+            f"📢 Канал: {TELEGRAM_CHANNEL}",
+            "",
+            "Нужна консультация или разработка — пиши Вадиму напрямую. А пока — с чем помочь по коду?",
+        ]
+        return "\n".join(lines)
+
     def _match_small_talk(self, message_lower: str) -> Optional[str]:
         trimmed = message_lower.strip()
         if not trimmed:
@@ -631,6 +671,10 @@ class EnhancedAIHandler:
             if len(lines) > max_rows:
                 message = "\n".join(lines[:max_rows]) + "\n…"
                 message_lower = message.lower().strip()
+
+            creator_reply = self._match_creator_question(message_lower)
+            if creator_reply:
+                return creator_reply, True  # fixed text: not cached, not re-processed
 
             small_talk_reply = self._match_small_talk(message_lower)
             if small_talk_reply:
