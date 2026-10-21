@@ -5,11 +5,15 @@ Enhanced AI Handler - с правильным форматированием к�
 import asyncio
 import logging
 import random
+import os
 import re
 import textwrap
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
 from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq, RateLimitError
 from config import CREATOR_USERNAME, GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT, TELEGRAM_CHANNEL, WEBSITE_URL
+
+# Random "personal tips" appended to unrelated answers felt like noise; off unless explicitly enabled.
+PERSONAL_TIPS_ENABLED = os.getenv("PERSONAL_TIPS_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 
 try:
     from smart_features import smart_features  # ✅ Подключаем умные функции
@@ -145,7 +149,7 @@ class EnhancedAIHandler:
             "triggers": ("привет", "приветик", "здорово", "здравствуйте", "hello", "hi", "hey"),
             "responses": [
                 "👋 Привет! Всегда рад поговорить о коде и проектах. Что сейчас в работе?",
-                "🤖 Привет! Я уже разогрел модель — давай к делу?",
+                "🤖 Привет! Я Помощник Программиста от Вадима (vadzim.by): помогу с кодом, найду ошибку или подскажу, чему учиться. С чего начнём?",
                 "🙌 Привет! Слушаю внимательно. Расскажи, с чем помочь.",
             ],
         },
@@ -312,8 +316,8 @@ class EnhancedAIHandler:
 
     # Groq regularly retires models; if GROQ_MODEL stops being served, use the best available chat model.
     _GROQ_MODEL_PREFERENCE = (
-        "openai/gpt-oss-20b",
         "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
         "llama-3.3-70b-versatile",
         "meta-llama/llama-4-maverick-17b-128e-instruct",
         "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -340,7 +344,10 @@ class EnhancedAIHandler:
             ids = sorted(m.id for m in (await self.groq_client.models.list()).data)
             logger.info("Groq models available: %s", ", ".join(ids))
             chat_ids = [i for i in ids if not any(x in i.lower() for x in self._NOT_CHAT_MARKERS)]
-            ordered = [m for m in [GROQ_MODEL, *self._GROQ_MODEL_PREFERENCE] if m in chat_ids]
+            # Known models follow our quality order (the larger gpt-oss first, the smaller one as overflow);
+            # a custom GROQ_MODEL that is not in that list is respected and goes first.
+            custom = [GROQ_MODEL] if GROQ_MODEL not in self._GROQ_MODEL_PREFERENCE else []
+            ordered = [m for m in [*custom, *self._GROQ_MODEL_PREFERENCE] if m in chat_ids]
             if GROQ_MODEL not in chat_ids:
                 logger.warning("Groq model %s is not available, using %s", GROQ_MODEL, ordered[:1] or chat_ids[:1])
             models = list(dict.fromkeys(ordered)) or chat_ids[:1] or [GROQ_MODEL]
@@ -357,9 +364,11 @@ class EnhancedAIHandler:
             extra = {}
             tokens = max_tokens
             if model.startswith("openai/gpt-oss"):
-                # gpt-oss reasons before answering; keep that short and leave room for the answer itself.
-                extra["reasoning_effort"] = "low"
-                tokens = max_tokens * 2
+                # gpt-oss reasons before answering. The large model thinks a bit more (it must catch things
+                # like an unclosed quote in the user's code); leave room for the answer itself.
+                large = "120b" in model
+                extra["reasoning_effort"] = "medium" if large else "low"
+                tokens = max_tokens * (3 if large else 2)
             last = position == len(models[:3]) - 1
             # Any failure (429, 5xx, timeout, model retired): move on to the next model right away
             # instead of waiting 30s+; only the last model gets the SDK's own retries.
@@ -929,7 +938,8 @@ class EnhancedAIHandler:
                     logger.warning("⚠️ Пустой ответ после обработки. Используем fallback.")
                     return self._get_fallback_response(message, mode), True
                     
-                ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
+                if PERSONAL_TIPS_ENABLED:
+                    ai_response = self._maybe_add_personal_tip(ai_response, preferences, user_context, message_lower)
                 logger.info("✅ Успешный ответ от Groq")
                 formatted = self._format_for_telegram(ai_response)
                 return formatted, False
