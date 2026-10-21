@@ -21,6 +21,13 @@ from enhanced_ai_handler import enhanced_ai_handler
 from database import user_db
 from smart_features import smart_features
 from config import TELEGRAM_TOKEN, CREATOR_USERNAME, TELEGRAM_CHANNEL, WEBSITE_URL
+from telegram_utils import (
+    MAX_DOCUMENT_BYTES,
+    build_file_prompt,
+    code_extension,
+    is_secret_extraction,
+    split_markdown,
+)
 from scheduler_course import run_forever
 from course_handler import (
     COURSE_GROUP_CHAT_ID,
@@ -31,7 +38,7 @@ from course_handler import (
     try_deliver_course_to_private,
 )
 from user_progress import get_lesson_cooldown_seconds, progress_manager as course_progress_manager
-from telegram.constants import ChatType
+from telegram.constants import ChatAction, ChatType
 from permissions import is_admin_identity
 
 # Логирование
@@ -44,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 
 
-def format_code_for_telegram(text):
+def format_code_for_telegram(text, header=True):
     """Format code blocks and basic Markdown for Telegram HTML output."""
     import re
 
@@ -77,7 +84,7 @@ def format_code_for_telegram(text):
     for placeholder, value in block_placeholders.items():
         text = text.replace(placeholder, value)
 
-    return f"✅ <b>Ответ:</b>\n{text}"
+    return f"✅ <b>Ответ:</b>\n{text}" if header else text
 
 
 def escape_code_content(code_text):
@@ -221,6 +228,7 @@ class UserContext:
         self.last_tip_text = None
         self.user_id = None
         self.feedback_scores = []
+        self.last_question = None
 
     MAX_HISTORY = 24  # messages kept per user (12 exchanges)
 
@@ -277,6 +285,18 @@ def get_main_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
+def get_answer_keyboard():
+    """Main links plus a quick 👍/👎 so we learn which answers helped."""
+    rows = [
+        [
+            InlineKeyboardButton("👍 Полезно", callback_data="feedback_good"),
+            InlineKeyboardButton("👎 Не то", callback_data="feedback_bad"),
+        ]
+    ]
+    rows.extend(get_main_keyboard().inline_keyboard)
+    return InlineKeyboardMarkup(rows)
+
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -306,23 +326,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_context = get_user_context(user_id)
 
     if data == "feedback_good":
-        user_context.update_skill_level(5)
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text(
-            "🙏 Спасибо за обратную связь! Это помогает мне становиться лучше.\n"
-            "💡 Подсказка: Чем конкретнее ваши вопросы, тем точнее мои ответы!"
-        )
+        logger.info("feedback=good user_id=%s question=%r", user_id, (user_context.last_question or "")[:120])
+        await query.edit_message_reply_markup(reply_markup=get_main_keyboard())
+        await query.message.reply_text("🙏 Спасибо! Рад, что помог. Если есть следующий вопрос — пиши.")
 
     elif query.data == "feedback_bad":
-        user_context.update_skill_level(2)
-        await query.edit_message_reply_markup(reply_markup=None)
+        logger.info("feedback=bad user_id=%s question=%r", user_id, (user_context.last_question or "")[:120])
+        await query.edit_message_reply_markup(reply_markup=get_main_keyboard())
         await query.message.reply_text(
-            "😔 Извините, что не смог помочь.\n"
-            "💬 Попробуйте:\n"
-            "• Переформулировать вопрос\n"
-            "• Добавить больше контекста\n"
-            "• Разбить сложную задачу на части\n\n"
-            "Я учусь на ваших отзывах!"
+            "😔 Жаль, что не попал. Давай поправим: напиши, что именно не так "
+            "(или добавь код и текст ошибки), и я отвечу точнее."
         )
 
     elif query.data == "get_hint":
@@ -442,7 +455,84 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(settings_text, reply_markup=get_main_keyboard())
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _keep_typing(chat) -> None:
+    """Show "typing…" while the answer is being prepared (Telegram clears it after ~5 s)."""
+    try:
+        while True:
+            await chat.send_action(ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.debug("typing indicator stopped", exc_info=True)
+
+
+def _looks_like_code(text: str) -> bool:
+    return any(marker in text for marker in ("```", "`", "def ", "function ", "class ", "import ", "from ",
+                                              "console.log", "print(", "return ", "html>", "DOCTYPE"))
+
+
+async def _send_answer(update: Update, response: str) -> None:
+    """Send an answer in as many messages as needed; never fail silently and never drop Cyrillic."""
+    chunks = split_markdown(response)
+    for index, chunk in enumerate(chunks):
+        last = index == len(chunks) - 1
+        markup = get_answer_keyboard() if last else None
+        first = index == 0
+        try:
+            if _looks_like_code(chunk):
+                html_text = format_code_for_telegram(chunk, header=first)
+            else:
+                body = escape_html_chars(chunk)
+                html_text = f"✅ <b>Ответ:</b>\n{body}" if first else body
+            await update.message.reply_text(html_text, reply_markup=markup, parse_mode='HTML')
+        except Exception as send_error:
+            logger.error(f"Message sending error (chunk {index + 1}/{len(chunks)}): {send_error}")
+            # Plain text always goes through, and keeps the Russian text intact.
+            await update.message.reply_text(chunk[:4000], reply_markup=markup)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A code file in a private chat is reviewed like pasted code."""
+    message = update.message
+    document = message.document if message else None
+    if not document:
+        return
+    extension = code_extension(document.file_name)
+    if not extension:
+        await message.reply_text(
+            "📎 Этот тип файла я пока не читаю. Пришли код текстом или файлом "
+            "(.py, .js, .ts, .html, .css, .json, .sql, .md и т.п.) — разберу ошибки и объясню.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+    if (document.file_size or 0) > MAX_DOCUMENT_BYTES:
+        await message.reply_text(
+            "📎 Файл великоват для разбора в чате (больше 100 КБ). Пришли нужный фрагмент или проблемную функцию.",
+            reply_markup=get_main_keyboard(),
+        )
+        return
+    try:
+        telegram_file = await document.get_file()
+        content = bytes(await telegram_file.download_as_bytearray()).decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.error("document download failed: %s", exc)
+        await message.reply_text("⚠️ Не удалось скачать файл. Попробуй отправить ещё раз или вставь код текстом.")
+        return
+    await handle_message(update, context, override_text=build_file_prompt(document.file_name, content, message.caption))
+
+
+async def handle_unsupported_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Photos, voice and stickers used to be ignored without a word."""
+    if update.message:
+        await update.message.reply_text(
+            "👀 Скриншоты и голосовые я пока не разбираю. Пришли код текстом или файлом (.py, .js, .html …) "
+            "и текст ошибки — разберусь и объясню.",
+            reply_markup=get_main_keyboard(),
+        )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, override_text: str | None = None):
     try:
         if not update or not update.message:
             logger.warning("Получено обновление без сообщения")
@@ -463,7 +553,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info("Cleared stale expects_mentor flag: user_id=%s lesson=%s active=%s", uid, mentor_lesson, active)
 
             # Аналогично для режима "жду код".
-            if update.message.text and course_progress_manager.is_expecting_code(uid):
+            if override_text is None and update.message.text and course_progress_manager.is_expecting_code(uid):
                 code_lesson = course_progress_manager.get_expected_code_lesson_id(uid)
                 if code_lesson and code_lesson == active:
                     await handle_course_code_message(update, context)
@@ -473,7 +563,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_id = update.message.from_user.id
         chat_type = getattr(update.effective_chat, "type", None)
-        raw_text = update.message.text or ""
+        raw_text = override_text if override_text is not None else (update.message.text or "")
         logger.info(
             "handle_message enter: chat_type=%s chat_id=%s user_id=%s text=%r expecting_code=%s expecting_mentor=%s",
             chat_type,
@@ -507,8 +597,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             # Normalize text to handle emojis and special characters
             text = text.encode('utf-8', errors='ignore').decode('utf-8')
-            if len(text) > 4000:  # Telegram message limit
-                text = text[:4000] + "..."
+            if len(text) > 12000:  # long pasted code / files; Telegram itself caps typed messages at 4096
+                text = text[:12000] + "..."
         except Exception as encoding_error:
             logger.warning(f"Encoding issue for user {user_id}: {encoding_error}")
             await update.message.reply_text(
@@ -542,16 +632,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("✅ Стиль кода: для начинающих")
             return
 
-        sensitive_keywords = [
-            'пароль', 'токен', 'ключ', 'password', 'token', 'key', 'api_key',
-            'secret', 'секрет', 'конфигурация', 'config', 'env', '.env'
-        ]
-
-        if any(keyword in text_lower for keyword in sensitive_keywords):
+        # Refuse only attempts to pull the BOT's secrets or system prompt. General programming questions
+        # ("как получить ключ в словаре", "как хранить токен в .env") must be answered.
+        if is_secret_extraction(text_lower):
             await update.message.reply_text(
-                "🔒 Я не могу предоставить доступ к конфиденциальной информации.\n\n"
-                "Для безопасности все пароли и токены защищены.\n"
-                "Если нужна помощь с настройкой конфигурации, опишите задачу без указания реальных данных.",
+                "🔒 Свои токены, ключи и внутренние инструкции я не раскрываю: так устроена безопасность.\n\n"
+                "Зато с радостью помогу по теме: как безопасно хранить секреты, настроить .env, "
+                "работать с токенами и API. Спрашивай!",
                 reply_markup=get_main_keyboard()
             )
             return
@@ -594,11 +681,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user_context.preferences['learning_goals'].append('learning_basics')
 
         user_context.add_message("user", text)
+        user_context.last_question = text
 
         # Логируем входящее сообщение
         logger.info(f"📨 Получено сообщение от {user_id}: {text[:100]}...")
 
         is_fallback = False
+        typing_task = asyncio.create_task(_keep_typing(update.effective_chat))
         try:
             response, is_fallback = await asyncio.wait_for(
                 enhanced_ai_handler.get_specialized_response(
@@ -611,6 +700,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 timeout=75.0
             )
         except asyncio.TimeoutError:
+            typing_task.cancel()
             logger.error(f"Timeout for user {user_id}")
             await update.message.reply_text(
                 "⏱️ Запрос обрабатывается слишком долго. Попробуйте упростить вопрос или повторить позже.",
@@ -618,12 +708,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         except Exception as ai_error:
+            typing_task.cancel()
             logger.error(f"AI handler error for user {user_id}: {ai_error}")
             await update.message.reply_text(
                 "🤖 Временные проблемы с ИИ. Попробуйте переформулировать вопрос.",
                 reply_markup=get_main_keyboard()
             )
             return
+
+        typing_task.cancel()
 
         if not response or len(response.strip()) == 0:
             await update.message.reply_text(
@@ -642,53 +735,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Логируем ответ
         logger.info(f"📤 Отправляем ответ: {response[:100]}...")
 
-        try:
-            has_code = any([
-                '\`\`\`' in response,  # Fixed: removed escaping from backticks
-                '`' in response,  # Inline code
-                'def ' in response,
-                'function ' in response,
-                'class ' in response,
-                'import ' in response,
-                'from ' in response,
-                'console.log' in response,
-                'print(' in response,
-                'return ' in response,
-                'html>' in response.lower(),
-                'DOCTYPE' in response
-            ])
-
-            if has_code:
-                formatted_response = format_code_for_telegram(response)
-                await update.message.reply_text(
-                    formatted_response,
-                    reply_markup=get_main_keyboard(),
-                    parse_mode='HTML'
-                )
-            else:
-                safe_response = escape_html_chars(response)
-                await update.message.reply_text(
-                    f"✅ <b>Ответ:</b>\n{safe_response}",
-                    reply_markup=get_main_keyboard(),
-                    parse_mode='HTML'
-                )
-
-        except Exception as send_error:
-            logger.error(f"Message sending error: {send_error}")
-            try:
-                safe_response = escape_html_chars(response)
-                await update.message.reply_text(
-                    f"✅ <b>Ответ:</b>\n{safe_response}",
-                    reply_markup=get_main_keyboard(),
-                    parse_mode='HTML'
-                )
-            except Exception:
-                # Final fallback - guaranteed to work
-                clean_response = ''.join(c for c in response if ord(c) < 128)  # ASCII only
-                await update.message.reply_text(
-                    f"✅ Ответ: {clean_response[:1000]}",
-                    reply_markup=get_main_keyboard()
-                )
+        await _send_answer(update, response)
 
     except Exception as e:
         logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)
@@ -915,6 +962,12 @@ async def bot_runner(*, mode: str = "auto") -> None:
         application.add_handler(CallbackQueryHandler(button_callback, pattern=r"^(admin_|feedback_)"))
         setup_course_handlers(application)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_document))
+        application.add_handler(MessageHandler(
+            (filters.PHOTO | filters.VOICE | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.Sticker.ALL)
+            & filters.ChatType.PRIVATE,
+            handle_unsupported_media,
+        ))
 
         if COURSE_GROUP_CHAT_ID is None:
             print(

@@ -681,7 +681,7 @@ class EnhancedAIHandler:
                 return "Напиши вопрос или вставь код — отвечу!", True
 
             # Обрезаем только очень длинные сообщения — код должен доходить до Groq целиком
-            max_rows = 60
+            max_rows = 250
             lines = message.splitlines()
             if len(lines) > max_rows:
                 message = "\n".join(lines[:max_rows]) + "\n…"
@@ -744,7 +744,8 @@ class EnhancedAIHandler:
                     response = self._augment_with_tone(response, tone)
                 return response, False
 
-            if ("html" in message_lower and "css" in message_lower and
+            # Canned answers only when the LLM is unavailable; otherwise the model answers the actual question.
+            if (not self.groq_client and "html" in message_lower and "css" in message_lower and
                     any(word in message_lower for word in ["нач", "start", "уч", "изуч", "learn"])):
                 roadmap = (
                     "<b>Как начать с HTML и CSS</b>\n"
@@ -767,7 +768,7 @@ class EnhancedAIHandler:
                 )
                 return roadmap, False
 
-            if "калькулятор" in message_lower or "calculator" in message_lower:
+            if not self.groq_client and ("калькулятор" in message_lower or "calculator" in message_lower):
                 if "javascript" in message_lower or "js" in message_lower:
                     calc_example = ("Вот простой HTML + JavaScript интерактивный калькулятор:\n\n"
                                     "```html\n"
