@@ -1335,12 +1335,13 @@ class EnhancedAIHandler:
         task += " Код форматируй в ```язык```. Не повторяй предыдущие объяснения слово в слово."
         task += " Отвечай ровно на заданный вопрос: простой вопрос — 1-4 предложения, объяснение — до ~800 символов, без таблиц, без заголовков и без разделов «частые ошибки», «ресурсы», «что дальше», если о них не просили. Ссылки на документацию только если они действительно нужны."
         
-        # Добавляем инструкцию про упоминание Вадима когда уместно
+        # Vadim is mentioned only when the user asks about the creator or needs a consultation/custom work.
+        # (Mentioning him on every Python/Telegram question made the model invent facts about his projects.)
         vadzim_context = ""
         message_lower_for_vadzim = message.lower()
-        if any(word in message_lower_for_vadzim for word in ["telegram", "бот", "боты", "python", "javascript", "django", "react", "создател", "вадим", "vadzim"]):
-            vadzim_context = " Если уместно, можешь упомянуть, что создатель бота Вадим (vadzim.by, @vadzim_belarus) специализируется на Python, JavaScript и Telegram-ботах. Но делай это естественно, только когда это релевантно."
-        
+        if any(word in message_lower_for_vadzim for word in ["создател", "вадим", "vadzim", "консультац", "заказать", "разработать для", "нанять"]):
+            vadzim_context = " Если уместно, скажи, что создатель бота Вадим (vadzim.by, @vadzim_belarus) принимает консультации и заказы на разработку. Не придумывай факты о его проектах и опыте сверх этого."
+
         task += vadzim_context
 
         context_sections: List[str] = []
