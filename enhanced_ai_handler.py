@@ -10,6 +10,7 @@ import re
 import textwrap
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
 from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq, RateLimitError
+from telegram_utils import POLITICS_REPLY, is_political_question
 from config import CREATOR_USERNAME, GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT, TELEGRAM_CHANNEL, WEBSITE_URL
 
 # Random "personal tips" appended to unrelated answers felt like noise; off unless explicitly enabled.
@@ -686,6 +687,9 @@ class EnhancedAIHandler:
             if len(lines) > max_rows:
                 message = "\n".join(lines[:max_rows]) + "\n…"
                 message_lower = message.lower().strip()
+
+            if is_political_question(message_lower):
+                return POLITICS_REPLY, True  # fixed text: the bot stays out of politics
 
             creator_reply = self._match_creator_question(message_lower)
             if creator_reply:

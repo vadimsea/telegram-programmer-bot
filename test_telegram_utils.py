@@ -103,3 +103,51 @@ def test_build_file_prompt_truncates_long_files():
     p = build_file_prompt("big.py", "x = 1\n" * 5000, None)
     assert "показано начало" in p
     assert len(p) < 10500
+
+
+# --------------------------------------------------------------------- politics
+from telegram_utils import is_political_question  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "что ты думаешь о путине?",
+        "кто виноват в войне в украине",
+        "за кого голосовать на выборах",
+        "расскажи про политику лукашенко",
+        "как ты относишься к санкциям против россии",
+        "кто лучше, трамп или байден?",
+        "what do you think about politics?",
+        "who will win the election",
+        "нужна ли беларуси оппозиция",
+        "твоё мнение о правительстве",
+    ],
+)
+def test_political_questions_are_detected(text):
+    assert is_political_question(text.lower())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "как протестировать функцию в pytest",
+        "какой выбор языка лучше для начинающего",
+        "война браузеров: chrome против firefox",
+        "как создать партию данных для обучения",
+        "почему режим отладки не работает",
+        "как сделать голосование в telegram боте",
+        "как работает мобильный интернет",
+        "объясни git rebase",
+        "как сохранить пароль в базе данных",
+        "санкт-петербург: как получить погоду через api",
+        "привет",
+    ],
+)
+def test_normal_questions_are_not_political(text):
+    assert not is_political_question(text.lower())
+
+
+def test_long_text_and_code_are_left_to_the_llm():
+    assert not is_political_question("```python\n# про путина\nprint(1)\n```")
+    assert not is_political_question("x " * 300 + "путин")

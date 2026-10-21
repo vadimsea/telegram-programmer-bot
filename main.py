@@ -25,6 +25,8 @@ from telegram_utils import (
     MAX_DOCUMENT_BYTES,
     build_file_prompt,
     code_extension,
+    POLITICS_REPLY,
+    is_political_question,
     is_secret_extraction,
     split_markdown,
 )
@@ -472,13 +474,13 @@ def _looks_like_code(text: str) -> bool:
                                               "console.log", "print(", "return ", "html>", "DOCTYPE"))
 
 
-async def _send_answer(update: Update, response: str) -> None:
+async def _send_answer(update: Update, response: str, header: bool = True) -> None:
     """Send an answer in as many messages as needed; never fail silently and never drop Cyrillic."""
     chunks = split_markdown(response)
     for index, chunk in enumerate(chunks):
         last = index == len(chunks) - 1
         markup = get_answer_keyboard() if last else None
-        first = index == 0
+        first = index == 0 and header
         try:
             if _looks_like_code(chunk):
                 html_text = format_code_for_telegram(chunk, header=first)
@@ -632,6 +634,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
                 await update.message.reply_text("✅ Стиль кода: для начинающих")
             return
 
+        # The bot stays out of politics: a fixed, friendly answer, the LLM is not asked.
+        if is_political_question(text_lower):
+            await update.message.reply_text(POLITICS_REPLY, reply_markup=get_main_keyboard())
+            return
+
         # Refuse only attempts to pull the BOT's secrets or system prompt. General programming questions
         # ("как получить ключ в словаре", "как хранить токен в .env") must be answered.
         if is_secret_extraction(text_lower):
@@ -735,7 +742,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
         # Логируем ответ
         logger.info(f"📤 Отправляем ответ: {response[:100]}...")
 
-        await _send_answer(update, response)
+        # Ready-made replies (greetings, creator, out-of-politics) read better without the "Ответ:" label.
+        await _send_answer(update, response, header=not is_fallback)
 
     except Exception as e:
         logger.error(f"Критическая ошибка в handle_message: {e}", exc_info=True)

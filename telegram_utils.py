@@ -123,3 +123,41 @@ def build_file_prompt(filename: str, content: str, caption: Optional[str]) -> st
     question = (caption or "").strip() or DEFAULT_FILE_QUESTION
     note = "\n(файл длинный, показано начало)" if truncated else ""
     return f"{question}\n\nФайл {filename}:{note}\n```{lang}\n{body}\n```"
+
+
+# ------------------------------------------------------------------- politics
+
+POLITICS_REPLY = (
+    "🙂 Политика — вне моей темы: я Помощник Программиста и обсуждаю код, ошибки, инструменты и обучение. "
+    "Давай лучше вернёмся к программированию: над чем сейчас работаешь или что хочешь разобрать?"
+)
+
+_POLITICAL_PATTERNS = (
+    # general vocabulary
+    r"политик\w*", r"политич\w+", r"политолог\w*", r"геополитик\w*", r"правительств\w*", r"президент\w*",
+    r"премьер[\s-]министр\w*", r"депутат\w*", r"парламент\w*", r"госдум\w*", r"оппозиц\w*",
+    r"выбор(ы|ов|ах|ам)\b", r"референдум\w*", r"санкци\w*", r"пропаганд\w*", r"диктатор\w*", r"режим\w*\s+(власт|лукашенк|путин)",
+    r"митинг\w*", r"протестн\w+", r"революци\w+\s+(в|на)\s+\w+", r"госпереворот\w*", r"госудрственн\w+\s+переворот\w*",
+    r"геноцид\w*", r"мигрант\w*\s+кризис", r"нато\b", r"евросоюз\w*", r"\bооН\b",
+    # wars and current conflicts
+    r"войн\w+\s+(в|на|с|между|росси|украин)", r"(украин|росси|израил|палестин|газ[аеу]\b|сири|беларус|белорусск)\w*\s+(война|конфликт|армия|власть|правительство)",
+    r"специальн\w+\s+военн\w+\s+операци\w+", r"\bсво\b", r"мобилизаци\w+", r"ядерн\w+\s+(оружи|удар)", r"оккупаци\w+",
+    # people
+    r"путин\w*", r"зеленск\w*", r"лукашенк\w*", r"тихановск\w*", r"навальн\w*", r"трамп\w*", r"байден\w*", r"макрон\w*",
+    r"шольц\w*", r"си\s+цзиньпин\w*", r"нетаньяху", r"кремл\w+",
+    # english
+    r"politic\w*", r"election\w*", r"government\b", r"\bputin\b", r"\btrump\b", r"\bbiden\b", r"zelensk\w*",
+    r"lukashenko", r"sanctions?\b", r"\bukraine\b", r"\bgaza\b", r"\bisrael\w*\s+(war|conflict)", r"propaganda",
+)
+_POLITICAL_RE = re.compile("|".join(f"(?:{p})" for p in _POLITICAL_PATTERNS), re.IGNORECASE)
+
+
+def is_political_question(text_lower: str) -> bool:
+    """True for short messages about politics, wars and political figures.
+
+    Long messages and code (where a comment may mention anything) are left to the LLM, which has
+    the same rule in its system prompt.
+    """
+    if len(text_lower) > 400 or "```" in text_lower:
+        return False
+    return _POLITICAL_RE.search(text_lower) is not None

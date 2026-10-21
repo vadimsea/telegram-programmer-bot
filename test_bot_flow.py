@@ -142,3 +142,11 @@ def test_html_failure_falls_back_to_plain_text_with_cyrillic():
     update.message.reply_text = flaky
     run(main.handle_message(update, MagicMock()))
     assert sent and "Привет, это ответ" in sent[0]["text"]  # Cyrillic survived the fallback
+
+
+def test_political_question_gets_the_out_of_politics_reply_without_llm():
+    calls = fake_llm("мнение о политике")
+    update, sent = make_update("Что ты думаешь о Путине и выборах?")
+    run(main.handle_message(update, MagicMock()))
+    assert not calls, "politics must not reach the LLM"
+    assert "вне моей темы" in sent[0]["text"]
