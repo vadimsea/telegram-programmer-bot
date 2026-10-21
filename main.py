@@ -608,7 +608,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     skill_level=user_context.skill_level,
                     preferences=user_context.preferences
                 ),
-                timeout=60.0
+                timeout=75.0
             )
         except asyncio.TimeoutError:
             logger.error(f"Timeout for user {user_id}")
@@ -947,18 +947,65 @@ async def bot_runner(*, mode: str = "auto") -> None:
         except Exception as e:
             logger.error(f"Ошибка отправки приветственного сообщения: {e}")
 
-        # Простой цикл ожидания
+        # Watchdog: return (so the supervisor restarts us) if polling stopped silently or Telegram
+        # has been unreachable for several checks in a row.
+        failures = 0
+        last_check = time.monotonic()
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
+            if not application.updater.running:
+                raise RuntimeError("polling stopped")
+            if time.monotonic() - last_check >= 120:
+                last_check = time.monotonic()
+                try:
+                    await asyncio.wait_for(application.bot.get_me(), timeout=20)
+                    failures = 0
+                except Exception as exc:
+                    failures += 1
+                    logger.warning("Telegram health check failed (%s/3): %s", failures, exc)
+                    if failures >= 3:
+                        raise RuntimeError("Telegram unreachable")
 
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}")
+        logger.error(f"Ошибка бота, перезапуск: {e}")
     finally:
-        if 'application' in locals():
-            if getattr(application, 'running', False):
-                await application.stop()
-            elif getattr(application, 'initialized', False):
-                await application.shutdown()
+        # Stop the poller first: an old poller left running causes 409 Conflict for the new one.
+        app = locals().get('application')
+        if app is not None:
+            for step in (
+                lambda: app.updater.stop() if app.updater and app.updater.running else None,
+                lambda: app.stop() if getattr(app, 'running', False) else None,
+                lambda: app.shutdown() if getattr(app, '_initialized', False) else None,
+            ):
+                try:
+                    result = step()
+                    if result is not None:
+                        await result
+                except Exception as exc:
+                    logger.warning("bot shutdown step failed: %s", exc)
+
+
+async def self_keepalive_loop(interval_s: int = 480) -> None:
+    """Ping our own public URL so Render's free plan does not spin the service down.
+
+    Render sets RENDER_EXTERNAL_URL. Pings that leave through the public address count as traffic.
+    """
+    url = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not url:
+        logger.info("RENDER_EXTERNAL_URL is not set, self keepalive is off")
+        return
+    import aiohttp
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{url}/health") as response:
+                    logger.debug("keepalive ping: %s", response.status)
+        except Exception as exc:
+            logger.warning("keepalive ping failed: %s", exc)
 
 
 async def health_handler(request):
@@ -996,6 +1043,8 @@ async def main_entry():
     """
     scheduler_task = asyncio.create_task(run_forever())
     bot_task = asyncio.create_task(bot_runner(mode="polling"))
+    keepalive_task = asyncio.create_task(self_keepalive_loop())
+    bot_started_at = time.monotonic()
 
     app = web.Application()
     app.router.add_get("/", health_handler)
@@ -1029,9 +1078,15 @@ async def main_entry():
                     else:
                         logger.error("bot_runner stopped unexpectedly (no exception). Restarting...")
 
-                    bot_task = asyncio.create_task(bot_runner())
+                    if time.monotonic() - bot_started_at > 180:
+                        bot_restart_delay_s = 5  # it ran fine for a while: restart quickly
                     await asyncio.sleep(bot_restart_delay_s)
                     bot_restart_delay_s = min(bot_restart_delay_s * 2, max_bot_restart_delay_s)
+                    bot_task = asyncio.create_task(bot_runner())
+                    bot_started_at = time.monotonic()
+
+                if keepalive_task.done():
+                    keepalive_task = asyncio.create_task(self_keepalive_loop())
 
                 if scheduler_task.done():
                     exc = scheduler_task.exception()
@@ -1054,8 +1109,10 @@ async def main_entry():
     except asyncio.CancelledError:
         bot_task.cancel()
         scheduler_task.cancel()
+        keepalive_task.cancel()
         raise
     finally:
+        keepalive_task.cancel()
         if not bot_task.done():
             bot_task.cancel()
             try:

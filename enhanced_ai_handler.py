@@ -8,7 +8,7 @@ import random
 import re
 import textwrap
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
-from groq import AsyncGroq, RateLimitError
+from groq import APIConnectionError, APIStatusError, APITimeoutError, AsyncGroq, RateLimitError
 from config import CREATOR_USERNAME, GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT, TELEGRAM_CHANNEL, WEBSITE_URL
 
 try:
@@ -361,7 +361,8 @@ class EnhancedAIHandler:
                 extra["reasoning_effort"] = "low"
                 tokens = max_tokens * 2
             last = position == len(models[:3]) - 1
-            # Rate limited (429): move on to the next model right away instead of waiting 30s+.
+            # Any failure (429, 5xx, timeout, model retired): move on to the next model right away
+            # instead of waiting 30s+; only the last model gets the SDK's own retries.
             client = self.groq_client if last else self.groq_client.with_options(max_retries=0)
             try:
                 response = await client.chat.completions.create(
@@ -369,13 +370,18 @@ class EnhancedAIHandler:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=tokens,
-                    timeout=timeout,
+                    timeout=timeout if last else min(timeout, 20),
                     **extra,
                 )
                 self._groq_model = model
                 return response
-            except RateLimitError as exc:
-                logger.warning("Groq rate limit on %s, trying next model", model)
+            except (RateLimitError, APITimeoutError, APIConnectionError) as exc:
+                logger.warning("Groq %s on %s, trying next model", type(exc).__name__, model)
+                last_error = exc
+            except APIStatusError as exc:
+                logger.warning("Groq HTTP %s on %s, trying next model", exc.status_code, model)
+                if exc.status_code in (400, 404):
+                    self._groq_models = None  # model may be retired: rediscover the list next time
                 last_error = exc
         raise last_error  # type: ignore[misc]
 
@@ -1167,7 +1173,7 @@ class EnhancedAIHandler:
             "explain_concept": "Пока не удалось подобрать объяснение. Сформулируй вопрос иначе или добавь деталей — так будет проще помочь.",
             "optimize_code": "Сейчас не получилось предложить оптимизацию. Попробуй описать цель подробнее (производительность, читаемость, масштабируемость) и спроси ещё раз.",
             "architecture_advice": "Не успел сформировать архитектурный совет. Дай больше информации о проекте (размер, требования, стек) и спроси ещё раз — подумаю над решением.",
-            "general": "Что-то пошло не так с ответом. Попробуй переформулировать вопрос или задать его по-другому — я готов помочь!"
+            "general": "Сейчас у меня очередь из вопросов, и ответ не успел собраться. Подожди полминуты и напиши ещё раз — я на месте и обязательно помогу 🙂"
         }
         return fallbacks.get(mode, fallbacks["general"])
 
