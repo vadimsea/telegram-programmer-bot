@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import re
+import textwrap
 from typing import List, Literal, Optional, Set, Tuple, TypedDict
 from groq import AsyncGroq, RateLimitError
 from config import GROQ_API_KEY, GROQ_MODEL, SYSTEM_PROMPT
@@ -781,7 +782,7 @@ class EnhancedAIHandler:
             elif any(phrase in message_lower for phrase in
                      ["с чего начать", "как начать", "начать учить", "начать изучать"]):
                 if self.groq_client:
-                    mode = "general"
+                    mode = "learning_start"
                 else:
                     advice = self._get_learning_advice_static()
                     return advice, True
@@ -846,8 +847,8 @@ class EnhancedAIHandler:
                     past = list(user_context.history)
                     if past and past[-1].get('role') == 'user':
                         past = past[:-1]
-                    for msg in past[-10:]:
-                        limit = 900 if msg.get('role') == 'assistant' else 1500
+                    for msg in past[-14:]:
+                        limit = 600 if msg.get('role') == 'assistant' else 1500
                         content = (msg.get('content') or '')[:limit]
                         if msg.get('role') in ('user', 'assistant') and content:
                             messages.append({"role": msg['role'], "content": content})
@@ -1107,11 +1108,13 @@ class EnhancedAIHandler:
         # Экранировать _ и * внутри code-блоков НЕ нужно — Telegram сам это делает.
         def normalize_block(m: re.Match) -> str:
             lang = m.group(1) or ""
-            code = m.group(2).strip()
+            # Models often put fenced code inside list items, so every line carries the same indent.
+            # Strip that common indent from all lines, not only the first, to keep the code intact.
+            code = textwrap.dedent(m.group(2)).strip("\n").rstrip()
             return "```" + lang + "\n" + code + "\n```"
 
-        normalized = re.sub(r'```(\w*)\s*(.*?)```', normalize_block, text, flags=re.DOTALL)
-        return normalized
+        # Only real fenced blocks (opening fence followed by a newline); one-line ```x = 1``` stays as is.
+        return re.sub(r'```(\w*)[ \t]*\n(.*?)```', normalize_block, text, flags=re.DOTALL)
 
     def _get_fallback_response(self, message: str, mode: str) -> str:
         fallbacks = {
@@ -1196,7 +1199,13 @@ class EnhancedAIHandler:
             "explain_concept": "Объясни концепцию",
             "optimize_code": "Оптимизируй код",
             "architecture_advice": "Дай советы по архитектуре",
-            "general": "Ответь на вопрос по программированию"
+            "general": "Ответь на вопрос по программированию",
+            "learning_start": (
+                "Человек спрашивает, с чего начать УЧИТЬСЯ программированию (это не про чтение чужого кода). "
+                "Дай короткий понятный план для новичка: 3-4 шага (выбрать первый язык и обосновать выбор, "
+                "где практиковаться, первый маленький проект, как не бросить). Без команд git и инструментов "
+                "для опытных. В конце задай один вопрос о его цели (сайты, боты, данные, игры), чтобы подсказать направление."
+            ),
         }
 
         # Персонализация на основе уровня навыков с более живыми формулировками
